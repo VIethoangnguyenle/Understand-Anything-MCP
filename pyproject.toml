@@ -1,0 +1,19 @@
+[project]
+name = "kg-mcp-server"
+version = "0.1.0"
+description = "Multi-project MCP Server for Understand-Anything Knowledge Graphs"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "rapidfuzz>=3.0.0",
+]
+
+[project.scripts]
+kg-mcp = "server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
