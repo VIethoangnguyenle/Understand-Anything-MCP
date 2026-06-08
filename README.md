@@ -1,5 +1,3 @@
-<![CDATA[<div align="center">
-
 # 🧠 Understand-Anything MCP Server
 
 **MCP Server giúp trợ lý AI hiểu sâu bất kỳ codebase nào thông qua Knowledge Graph.**
