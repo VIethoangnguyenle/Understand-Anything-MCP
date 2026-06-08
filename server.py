@@ -430,7 +430,8 @@ def get_node_source(
     if node.layer:
         lines.append(f"Layer: {node.layer}")
 
-    lines.append(f"\n```java\n{source}\n```")
+    lang, _strategy = kgl.detect_language(node.file_path)
+    lines.append(f"\n```{lang}\n{source}\n```")
 
     return "\n".join(lines)
 
@@ -719,19 +720,131 @@ def get_domain_detail(domain_name: str, project: str | None = None) -> str:
         for _, flow in flows:
             lines.append(f"\n▶ {flow.name}")
             lines.append(f"  {flow.summary}")
-            # Get steps for this flow
-            steps = kgl.get_domain_children(graph, flow.id, "has_step")
+            # Show entry point info if available
+            flow_meta = flow.domain_meta
+            if flow_meta.get("entryPoint"):
+                entry_type = flow_meta.get("entryType", "unknown")
+                lines.append(f"  Entry: {flow_meta['entryPoint']} ({entry_type})")
+            # Get steps for this flow (edge type is "flow_step" in domain-graph.json)
+            steps = kgl.get_domain_children(graph, flow.id, "flow_step")
             if steps:
-                for _, step in steps:
-                    lines.append(f"    └─ {step.name}")
+                steps.sort(key=lambda x: x[0].weight)  # sort by edge weight = step order
+                for idx, (_, step) in enumerate(steps, 1):
+                    lines.append(f"    {idx}. {step.name}")
                     if step.summary:
                         lines.append(f"       {step.summary}")
+                    # Cross-reference to code nodes
+                    code_nodes = kgl.resolve_domain_to_code(graph, step, limit=1)
+                    if code_nodes:
+                        cn = code_nodes[0]
+                        lines.append(f"       📎 [{cn.type}] {cn.name} ({cn.id})")
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Tool 10: find_entry_points
+# Tool 10: get_domain_flow_detail
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_domain_flow_detail(flow_name: str, project: str | None = None) -> str:
+    """
+    Deep-dive into a specific business flow: entry point, all steps with ordering,
+    and linked code nodes for each step.
+
+    Use this for detailed understanding of a single flow's implementation.
+    For an overview of all domains/flows, use get_domain_overview or get_domain_detail.
+
+    Args:
+        flow_name: Flow name (e.g., "SAGA Xử lý Lương", "init payroll", "recovery retry").
+                   Fuzzy matching supported.
+        project:   Project name.
+
+    Returns:
+        Full flow details with entry point, ordered steps, step summaries,
+        and cross-referenced code nodes for each step.
+    """
+    try:
+        graph = _resolve_project(project)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    # Find flow by name (fuzzy)
+    flows = [dn for dn in graph.domain_nodes if dn.type == "flow"]
+    matched = None
+    for f in flows:
+        if flow_name.lower() in f.name.lower() or flow_name.lower() in f.id.lower():
+            matched = f
+            break
+
+    if not matched:
+        results = kgl.search_domain_nodes(graph, flow_name)
+        flow_results = [r for r in results if r.type == "flow"]
+        if flow_results:
+            matched = flow_results[0]
+
+    if not matched:
+        available = [f.name for f in flows]
+        return f"Flow '{flow_name}' not found. Available flows ({len(available)}):\n" + "\n".join(f"  • {n}" for n in available)
+
+    # Find parent domain
+    parent_domain = None
+    for edge in graph.domain_edges:
+        if edge.target == matched.id and edge.relation == "contains_flow":
+            parent_domain = kgl.get_domain_node_by_id(graph, edge.source)
+            break
+
+    lines = [
+        f"=== FLOW: {matched.name} ===",
+        f"ID: {matched.id}",
+        f"Complexity: {matched.complexity}",
+    ]
+    if parent_domain:
+        lines.append(f"Domain: {parent_domain.name} ({parent_domain.id})")
+    lines.append(f"\nSummary:\n  {matched.summary}")
+
+    # Entry point
+    flow_meta = matched.domain_meta
+    if flow_meta.get("entryPoint"):
+        entry_type = flow_meta.get("entryType", "unknown")
+        lines.append(f"\nEntry Point: {flow_meta['entryPoint']}")
+        lines.append(f"Entry Type:  {entry_type}")
+
+    # Steps with full detail
+    steps = kgl.get_domain_children(graph, matched.id, "flow_step")
+    if steps:
+        steps.sort(key=lambda x: x[0].weight)
+        lines.append(f"\n--- STEPS ({len(steps)}) ---")
+        for idx, (_, step) in enumerate(steps, 1):
+            lines.append(f"\n  {idx}. {step.name}")
+            if step.summary:
+                lines.append(f"     {step.summary}")
+            if step.tags:
+                lines.append(f"     Tags: {', '.join(step.tags)}")
+
+            # Cross-reference to code nodes (show up to 3)
+            code_nodes = kgl.resolve_domain_to_code(graph, step, limit=3)
+            if code_nodes:
+                lines.append(f"     Code references:")
+                for cn in code_nodes:
+                    lines.append(f"       📎 [{cn.type}] {cn.name}")
+                    lines.append(f"         ID: {cn.id}")
+                    if cn.layer:
+                        lines.append(f"         Layer: {cn.layer}")
+    else:
+        lines.append("\n(no steps defined for this flow)")
+
+    # Cross-domain interactions from parent domain
+    if parent_domain and parent_domain.domain_meta.get("crossDomainInteractions"):
+        lines.append("\n--- CROSS-DOMAIN INTERACTIONS ---")
+        for interaction in parent_domain.domain_meta["crossDomainInteractions"]:
+            lines.append(f"  • {interaction}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 11: find_entry_points
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -913,6 +1026,191 @@ def get_tour(
         nav.append(f"→ Next: stop_index={stop.order + 1}")
     if nav:
         lines.append(f"\n{' | '.join(nav)}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 13: find_path
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def find_path(
+    source_id: str,
+    target_id: str,
+    max_depth: int = 6,
+    project: str | None = None,
+) -> str:
+    """
+    Find the shortest path between two nodes in the knowledge graph.
+
+    Uses undirected BFS — traverses both outgoing and incoming edges.
+    Useful for understanding how two components are connected.
+
+    Args:
+        source_id: Starting node ID.
+        target_id: Destination node ID.
+        max_depth: Maximum path length (default 6, max 10).
+        project:   Project name.
+
+    Returns:
+        Path from source to target showing each hop and relation.
+    """
+    try:
+        graph = _resolve_project(project)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    source_node = kgl.get_node_by_id(graph, source_id)
+    if source_node is None:
+        return f"Source node not found: '{source_id}'"
+    target_node = kgl.get_node_by_id(graph, target_id)
+    if target_node is None:
+        return f"Target node not found: '{target_id}'"
+
+    max_depth = min(max_depth, 10)
+    path = kgl.find_shortest_path(graph, source_id, target_id, max_depth)
+
+    if not path:
+        return (
+            f"No path found between '{source_node.name}' and '{target_node.name}' "
+            f"within {max_depth} hops."
+        )
+
+    lines = [
+        f"=== PATH: {source_node.name} → {target_node.name} ({len(path) - 1} hops) ===\n"
+    ]
+    for i, (nid, name, rel) in enumerate(path):
+        node = kgl.get_node_by_id(graph, nid)
+        type_str = f"[{node.type}]" if node else ""
+        if i == 0:
+            lines.append(f"▶ {type_str} {name}")
+        else:
+            lines.append(f"  {'  ' * (i - 1)}└─[{rel}]─→ {type_str} {name}")
+        lines.append(f"  {'  ' * i}ID: {nid}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 14: get_class_hierarchy
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_class_hierarchy(
+    class_id: str,
+    direction: str = "both",
+    max_depth: int = 5,
+    project: str | None = None,
+) -> str:
+    """
+    Show the inheritance hierarchy for a class (extends/implements tree).
+
+    Args:
+        class_id:  Class node ID to analyze.
+        direction: "up" (parents/supertypes), "down" (children/subtypes), "both".
+        max_depth: Max traversal depth (default 5, max 10).
+        project:   Project name.
+
+    Returns:
+        Inheritance tree showing parent and child classes with relation types.
+    """
+    try:
+        graph = _resolve_project(project)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    node = kgl.get_node_by_id(graph, class_id)
+    if node is None:
+        return f"Node not found: '{class_id}'"
+
+    max_depth = min(max_depth, 10)
+    hierarchy = kgl.get_class_hierarchy(graph, class_id, direction, max_depth)
+
+    if len(hierarchy) <= 1:
+        return f"'{node.name}' has no extends/implements relationships (direction={direction})."
+
+    parents = [(d, nid, name, rel) for d, nid, name, rel in hierarchy if d < 0]
+    children = [(d, nid, name, rel) for d, nid, name, rel in hierarchy if d > 0]
+
+    lines = [f"=== CLASS HIERARCHY: {node.name} ===\n"]
+
+    if parents:
+        lines.append(f"SUPERTYPES ({len(parents)}):")
+        for depth, nid, name, rel in parents:
+            indent = "  " * abs(depth)
+            lines.append(f"  {indent}▲ [{rel}] {name}")
+            lines.append(f"  {indent}  ID: {nid}")
+        lines.append("")
+
+    lines.append(f"● {node.name} (self)")
+    lines.append(f"  ID: {class_id}\n")
+
+    if children:
+        lines.append(f"SUBTYPES ({len(children)}):")
+        for depth, nid, name, rel in children:
+            indent = "  " * depth
+            lines.append(f"  {indent}▼ [{rel}] {name}")
+            lines.append(f"  {indent}  ID: {nid}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 15: search_by_file_path
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def search_by_file_path(
+    path_pattern: str,
+    node_type: str | None = None,
+    limit: int = 30,
+    project: str | None = None,
+) -> str:
+    """
+    Find nodes by file path pattern (substring match).
+
+    Useful for finding all nodes in a package, module, or directory.
+    Case-insensitive.
+
+    Args:
+        path_pattern: Substring to match in file paths (e.g., "payroll", "com/vietbank/sme", "auth").
+        node_type:    Optional filter by type: "file", "function", "class". Leave empty for all.
+        limit:        Max results (default 30, max 50).
+        project:      Project name.
+
+    Returns:
+        List of matching nodes sorted by file path.
+    """
+    try:
+        graph = _resolve_project(project)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    limit = min(limit, 50)
+    nodes = kgl.search_by_path(graph, path_pattern, node_type, limit)
+
+    if not nodes:
+        suffix = f" (type={node_type})" if node_type else ""
+        return f"No nodes found matching path '{path_pattern}'{suffix}."
+
+    # Group by type
+    by_type: dict[str, list[kgl.Node]] = {}
+    for n in nodes:
+        by_type.setdefault(n.type, []).append(n)
+
+    lines = [f"Found {len(nodes)} node(s) matching path '{path_pattern}':\n"]
+    for t, items in sorted(by_type.items()):
+        lines.append(f"[{t.upper()}] ({len(items)}):")
+        for n in items:
+            lines.append(f"  • {n.name}")
+            lines.append(f"    Path: {n.file_path}")
+            lines.append(f"    ID: {n.id}")
+        lines.append("")
+
+    if len(nodes) >= limit:
+        lines.append(f"--- Showing first {limit} results. Narrow your search for more precision. ---")
 
     return "\n".join(lines)
 

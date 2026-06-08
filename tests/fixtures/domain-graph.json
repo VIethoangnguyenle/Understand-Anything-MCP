@@ -1,0 +1,77 @@
+{
+  "nodes": [
+    {
+      "id": "domain:payment",
+      "type": "domain",
+      "name": "Payment Processing",
+      "summary": "Handles all payment-related business operations",
+      "tags": ["payment", "financial"],
+      "complexity": "complex",
+      "domainMeta": {
+        "entities": ["Payment", "Transaction", "Invoice"],
+        "businessRules": [
+          "All payments must be validated before processing",
+          "Refunds require manager approval"
+        ],
+        "crossDomainInteractions": [
+          "Triggers notification after payment success"
+        ]
+      },
+      "filePath": "",
+      "lineRange": ""
+    },
+    {
+      "id": "flow:pay-process",
+      "type": "flow",
+      "name": "Process Payment",
+      "summary": "End-to-end payment processing flow",
+      "tags": ["payment"],
+      "complexity": "complex",
+      "domainMeta": {},
+      "filePath": "src/main/Service.java",
+      "lineRange": "10-50"
+    },
+    {
+      "id": "step:validate",
+      "type": "step",
+      "name": "Validate Input",
+      "summary": "Validates payment input data before processing",
+      "tags": ["validation"],
+      "complexity": "simple",
+      "domainMeta": {},
+      "filePath": "src/main/Service.java",
+      "lineRange": "12-20"
+    },
+    {
+      "id": "step:execute",
+      "type": "step",
+      "name": "Execute Payment",
+      "summary": "Calls gateway to execute the payment",
+      "tags": ["gateway"],
+      "complexity": "moderate",
+      "domainMeta": {},
+      "filePath": "src/main/Service.java",
+      "lineRange": "22-40"
+    }
+  ],
+  "edges": [
+    {
+      "source": "domain:payment",
+      "target": "flow:pay-process",
+      "type": "contains_flow",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:pay-process",
+      "target": "step:validate",
+      "type": "has_step",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:pay-process",
+      "target": "step:execute",
+      "type": "has_step",
+      "weight": 1.0
+    }
+  ]
+}

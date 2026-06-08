@@ -1,0 +1,210 @@
+{
+  "project": {
+    "name": "test-project",
+    "description": "Minimal test project for kg-mcp-server",
+    "languages": ["java"],
+    "frameworks": ["spring"]
+  },
+  "nodes": [
+    {
+      "id": "file:src/main/Service.java",
+      "type": "file",
+      "name": "Service.java",
+      "filePath": "src/main/Service.java",
+      "summary": "Main service file containing PaymentService class",
+      "tags": ["service", "payment"],
+      "complexity": "moderate",
+      "sizeLines": 200
+    },
+    {
+      "id": "class:PaymentService",
+      "type": "class",
+      "name": "PaymentService",
+      "filePath": "src/main/Service.java",
+      "summary": "Handles payment processing logic",
+      "tags": ["payment", "service"],
+      "complexity": "complex",
+      "sizeLines": 150
+    },
+    {
+      "id": "class:BaseService",
+      "type": "class",
+      "name": "BaseService",
+      "filePath": "src/main/BaseService.java",
+      "summary": "Abstract base class for all services",
+      "tags": ["base", "abstract"],
+      "complexity": "simple",
+      "sizeLines": 50
+    },
+    {
+      "id": "class:IPaymentProcessor",
+      "type": "class",
+      "name": "IPaymentProcessor",
+      "filePath": "src/main/IPaymentProcessor.java",
+      "summary": "Interface for payment processing",
+      "tags": ["interface", "payment"],
+      "complexity": "simple",
+      "sizeLines": 20
+    },
+    {
+      "id": "class:RefundService",
+      "type": "class",
+      "name": "RefundService",
+      "filePath": "src/main/RefundService.java",
+      "summary": "Handles refund operations, extends PaymentService",
+      "tags": ["refund", "payment"],
+      "complexity": "moderate",
+      "sizeLines": 80
+    },
+    {
+      "id": "func:processPayment",
+      "type": "function",
+      "name": "processPayment",
+      "filePath": "src/main/Service.java",
+      "summary": "Processes a single payment transaction",
+      "tags": ["payment", "transaction"],
+      "complexity": "complex",
+      "sizeLines": 30
+    },
+    {
+      "id": "func:validateInput",
+      "type": "function",
+      "name": "validateInput",
+      "filePath": "src/main/Service.java",
+      "summary": "Validates payment input data",
+      "tags": ["validation"],
+      "complexity": "simple",
+      "sizeLines": 15
+    },
+    {
+      "id": "func:sendNotification",
+      "type": "function",
+      "name": "sendNotification",
+      "filePath": "src/main/NotificationHelper.java",
+      "summary": "Sends notification after payment",
+      "tags": ["notification"],
+      "complexity": "simple",
+      "sizeLines": 10
+    },
+    {
+      "id": "func:callGateway",
+      "type": "function",
+      "name": "callGateway",
+      "filePath": "src/main/GatewayClient.java",
+      "summary": "Calls external payment gateway",
+      "tags": ["gateway", "external"],
+      "complexity": "moderate",
+      "sizeLines": 25
+    },
+    {
+      "id": "file:src/main/GatewayClient.java",
+      "type": "file",
+      "name": "GatewayClient.java",
+      "filePath": "src/main/GatewayClient.java",
+      "summary": "External payment gateway client",
+      "tags": ["gateway"],
+      "complexity": "moderate",
+      "sizeLines": 100
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/main/Service.java",
+      "target": "class:PaymentService",
+      "type": "contains",
+      "direction": "forward"
+    },
+    {
+      "source": "file:src/main/Service.java",
+      "target": "func:processPayment",
+      "type": "contains",
+      "direction": "forward"
+    },
+    {
+      "source": "file:src/main/Service.java",
+      "target": "func:validateInput",
+      "type": "contains",
+      "direction": "forward"
+    },
+    {
+      "source": "file:src/main/Service.java",
+      "target": "file:src/main/GatewayClient.java",
+      "type": "imports",
+      "direction": "forward"
+    },
+    {
+      "source": "func:processPayment",
+      "target": "func:validateInput",
+      "type": "calls",
+      "direction": "forward"
+    },
+    {
+      "source": "func:processPayment",
+      "target": "func:callGateway",
+      "type": "calls",
+      "direction": "forward"
+    },
+    {
+      "source": "func:processPayment",
+      "target": "func:sendNotification",
+      "type": "calls",
+      "direction": "forward"
+    },
+    {
+      "source": "class:PaymentService",
+      "target": "class:BaseService",
+      "type": "extends",
+      "direction": "forward"
+    },
+    {
+      "source": "class:PaymentService",
+      "target": "class:IPaymentProcessor",
+      "type": "implements",
+      "direction": "forward"
+    },
+    {
+      "source": "class:RefundService",
+      "target": "class:PaymentService",
+      "type": "extends",
+      "direction": "forward"
+    },
+    {
+      "source": "file:src/main/GatewayClient.java",
+      "target": "func:callGateway",
+      "type": "contains",
+      "direction": "forward"
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer:service",
+      "name": "Service Layer",
+      "description": "Business logic services",
+      "nodeIds": [
+        "file:src/main/Service.java",
+        "class:PaymentService",
+        "class:BaseService",
+        "class:RefundService",
+        "func:processPayment",
+        "func:validateInput"
+      ]
+    },
+    {
+      "id": "layer:gateway",
+      "name": "Gateway Layer",
+      "description": "External system integration",
+      "nodeIds": [
+        "file:src/main/GatewayClient.java",
+        "func:callGateway"
+      ]
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "Payment Processing Entry Point",
+      "description": "Start here to understand payment flow",
+      "nodeIds": ["func:processPayment", "class:PaymentService"]
+    }
+  ]
+}

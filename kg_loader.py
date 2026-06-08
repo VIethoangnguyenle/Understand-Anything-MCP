@@ -142,7 +142,7 @@ class DomainEdge:
     """An edge in the domain graph."""
     source: str
     target: str
-    relation: str       # contains_flow | has_step | triggers | depends_on
+    relation: str       # contains_flow | flow_step | cross_domain | triggers | depends_on
     weight: float
 
     @classmethod
@@ -187,6 +187,8 @@ class ProjectGraph:
     _domain_node_index: dict[str, DomainNode] = field(default_factory=dict, repr=False)
     _edges_by_source: dict[str, list[Edge]] = field(default_factory=dict, repr=False)
     _edges_by_target: dict[str, list[Edge]] = field(default_factory=dict, repr=False)
+    _domain_edges_by_source: dict[str, list[DomainEdge]] = field(default_factory=dict, repr=False)
+    _nodes_by_path: dict[str, list[Node]] = field(default_factory=dict, repr=False)
 
     def build_indexes(self) -> None:
         """Build lookup indexes for fast queries."""
@@ -209,6 +211,17 @@ class ProjectGraph:
         for edge in self.edges:
             self._edges_by_source.setdefault(edge.source, []).append(edge)
             self._edges_by_target.setdefault(edge.target, []).append(edge)
+
+        # Build domain edge index
+        self._domain_edges_by_source = {}
+        for edge in self.domain_edges:
+            self._domain_edges_by_source.setdefault(edge.source, []).append(edge)
+
+        # Build file_path → nodes index for cross-referencing domain↔code
+        self._nodes_by_path = {}
+        for node in self.nodes:
+            if node.file_path:
+                self._nodes_by_path.setdefault(node.file_path, []).append(node)
 
 
 # ---------------------------------------------------------------------------
@@ -596,18 +609,18 @@ def get_neighbors(
     if direction in ("in", "both"):
         _collect_in(node_id)
 
-    # 2. Edge resolution for class nodes
+    # 2. Edge resolution for class and function nodes
     #    KG schema is file-centric: imports and contains edges live on file nodes.
-    #    When querying a class, inherit its parent file's outgoing edges so users
-    #    can see what the class imports and which functions it contains.
+    #    When querying a class or function, inherit parent file's outgoing edges
+    #    so users can see imports and sibling nodes.
     node = get_node_by_id(graph, node_id)
-    if node and node.type == "class":
+    if node and node.type in ("class", "function"):
         parent_file_id = _resolve_to_parent_file(graph, node_id)
         if parent_file_id:
             if direction in ("out", "both"):
                 for edge in graph._edges_by_source.get(parent_file_id, []):
                     if edge.target == node_id:
-                        continue  # skip file→contains→this_class (self-ref)
+                        continue  # skip file→contains→this_node (self-ref)
                     if relation_filter and edge.relation != relation_filter:
                         continue
                     if edge.target in seen:
@@ -716,6 +729,183 @@ def find_impact(
 
 
 # ---------------------------------------------------------------------------
+# Cross-graph queries
+# ---------------------------------------------------------------------------
+
+def find_shortest_path(
+    graph: ProjectGraph,
+    source_id: str,
+    target_id: str,
+    max_depth: int = 6,
+) -> list[tuple[str, str, str]]:
+    """
+    BFS to find shortest path between two nodes (undirected traversal).
+
+    Returns list of (node_id, node_name, relation_used) from source to target.
+    Empty list if no path found within max_depth.
+    """
+    if source_id == target_id:
+        node = get_node_by_id(graph, source_id)
+        return [(source_id, node.name if node else source_id, "self")]
+
+    # BFS with parent tracking
+    visited: set[str] = {source_id}
+    # queue items: (current_id, depth)
+    queue: list[tuple[str, int]] = [(source_id, 0)]
+    # parent map: child_id → (parent_id, relation)
+    parent: dict[str, tuple[str, str]] = {}
+
+    while queue:
+        current_id, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+
+        # Explore outgoing edges
+        for edge in graph._edges_by_source.get(current_id, []):
+            if edge.target not in visited:
+                visited.add(edge.target)
+                parent[edge.target] = (current_id, edge.relation)
+                if edge.target == target_id:
+                    break
+                queue.append((edge.target, depth + 1))
+
+        # Explore incoming edges (undirected search)
+        for edge in graph._edges_by_target.get(current_id, []):
+            if edge.source not in visited:
+                visited.add(edge.source)
+                parent[edge.source] = (current_id, edge.relation)
+                if edge.source == target_id:
+                    break
+                queue.append((edge.source, depth + 1))
+
+        if target_id in parent:
+            break
+
+    # Reconstruct path
+    if target_id not in parent:
+        return []
+
+    path_ids: list[tuple[str, str]] = []  # (node_id, relation)
+    current = target_id
+    while current in parent:
+        prev_id, rel = parent[current]
+        path_ids.append((current, rel))
+        current = prev_id
+    path_ids.append((source_id, "start"))
+    path_ids.reverse()
+
+    result: list[tuple[str, str, str]] = []
+    for nid, rel in path_ids:
+        node = get_node_by_id(graph, nid)
+        result.append((nid, node.name if node else nid, rel))
+
+    return result
+
+
+def get_class_hierarchy(
+    graph: ProjectGraph,
+    class_id: str,
+    direction: str = "both",
+    max_depth: int = 5,
+) -> list[tuple[int, str, str, str]]:
+    """
+    BFS on extends/implements edges to build inheritance tree.
+
+    Args:
+        graph: The project graph.
+        class_id: Starting class node ID.
+        direction: "up" (parents/supertypes), "down" (children/subtypes), "both".
+        max_depth: Maximum traversal depth.
+
+    Returns:
+        List of (depth, node_id, node_name, relation).
+        Depth 0 is the starting class. Negative depths = parents, positive = children.
+    """
+    hierarchy_relations = {"extends", "implements"}
+    result: list[tuple[int, str, str, str]] = []
+
+    start_node = get_node_by_id(graph, class_id)
+    if not start_node:
+        return result
+
+    result.append((0, class_id, start_node.name, "self"))
+
+    # Upward: follow extends/implements edges where class_id is SOURCE
+    # (this class extends/implements → parent)
+    if direction in ("up", "both"):
+        visited: set[str] = {class_id}
+        queue: list[tuple[str, int]] = [(class_id, 1)]
+        while queue:
+            current_id, depth = queue.pop(0)
+            if depth > max_depth:
+                continue
+            for edge in graph._edges_by_source.get(current_id, []):
+                if edge.relation in hierarchy_relations and edge.target not in visited:
+                    visited.add(edge.target)
+                    node = get_node_by_id(graph, edge.target)
+                    if node:
+                        result.append((-depth, edge.target, node.name, edge.relation))
+                        queue.append((edge.target, depth + 1))
+
+    # Downward: follow extends/implements edges where class_id is TARGET
+    # (children extend/implement → this class)
+    if direction in ("down", "both"):
+        visited_down: set[str] = {class_id}
+        queue_down: list[tuple[str, int]] = [(class_id, 1)]
+        while queue_down:
+            current_id, depth = queue_down.pop(0)
+            if depth > max_depth:
+                continue
+            for edge in graph._edges_by_target.get(current_id, []):
+                if edge.relation in hierarchy_relations and edge.source not in visited_down:
+                    visited_down.add(edge.source)
+                    node = get_node_by_id(graph, edge.source)
+                    if node:
+                        result.append((depth, edge.source, node.name, edge.relation))
+                        queue_down.append((edge.source, depth + 1))
+
+    # Sort: parents (negative depth) first, then self (0), then children (positive)
+    result.sort(key=lambda x: x[0])
+    return result
+
+
+def search_by_path(
+    graph: ProjectGraph,
+    path_pattern: str,
+    node_type: str | None = None,
+    limit: int = 50,
+) -> list[Node]:
+    """
+    Find nodes whose file_path contains the given pattern.
+
+    Useful for finding all nodes in a package or module.
+    Case-insensitive substring match.
+
+    Args:
+        graph: The project graph.
+        path_pattern: Substring to match in file_path (e.g., "payroll", "com/vietbank/sme").
+        node_type: Optional filter by node type.
+        limit: Maximum results to return.
+
+    Returns:
+        List of matching nodes, sorted by file_path.
+    """
+    pattern = path_pattern.lower()
+    results: list[Node] = []
+
+    for node in graph.nodes:
+        if node_type and node.type != node_type:
+            continue
+        if node.file_path and pattern in node.file_path.lower():
+            results.append(node)
+            if len(results) >= limit:
+                break
+
+    results.sort(key=lambda n: n.file_path)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Source code extraction
 # ---------------------------------------------------------------------------
 
@@ -723,6 +913,39 @@ import re
 
 # Max lines to return for whole-file reads
 _MAX_FILE_LINES = 200
+
+# File extension → (language name, extraction strategy)
+#   "brace"  = Java/Kotlin/TS/JS/Go brace-counting
+#   "indent" = Python indentation-based
+_LANG_MAP: dict[str, tuple[str, str]] = {
+    ".java": ("java", "brace"),
+    ".kt": ("kotlin", "brace"),
+    ".kts": ("kotlin", "brace"),
+    ".ts": ("typescript", "brace"),
+    ".tsx": ("typescript", "brace"),
+    ".js": ("javascript", "brace"),
+    ".jsx": ("javascript", "brace"),
+    ".go": ("go", "brace"),
+    ".rs": ("rust", "brace"),
+    ".cs": ("csharp", "brace"),
+    ".py": ("python", "indent"),
+    ".yaml": ("yaml", "none"),
+    ".yml": ("yaml", "none"),
+    ".xml": ("xml", "none"),
+    ".json": ("json", "none"),
+    ".sql": ("sql", "none"),
+    ".properties": ("properties", "none"),
+    ".gradle": ("groovy", "brace"),
+}
+
+
+def detect_language(file_path: str) -> tuple[str, str]:
+    """Detect language and extraction strategy from file extension.
+    
+    Returns (language_name, strategy) where strategy is 'brace', 'indent', or 'none'.
+    """
+    ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+    return _LANG_MAP.get(ext, ("", "brace"))  # default to brace-counting
 
 
 def _resolve_file_path(graph: ProjectGraph, node: Node) -> str | None:
@@ -809,7 +1032,13 @@ def read_node_source(
 
     # For function/class → try to extract the symbol block
     if node.type in ("function", "class"):
-        extracted = _extract_java_symbol(all_lines, node.name, node.type, context_lines)
+        _lang, strategy = detect_language(node.file_path)
+        if strategy == "indent":
+            extracted = _extract_python_symbol(all_lines, node.name, node.type, context_lines)
+        elif strategy == "brace":
+            extracted = _extract_brace_symbol(all_lines, node.name, node.type, context_lines)
+        else:
+            extracted = None
         if extracted:
             code, start, end = extracted
             return code, start, end, total
@@ -822,14 +1051,14 @@ def read_node_source(
     return content, 1, max_lines, total
 
 
-def _extract_java_symbol(
+def _extract_brace_symbol(
     lines: list[str],
     symbol_name: str,
     symbol_type: str,  # "function" or "class"
     context: int = 3,
 ) -> tuple[str, int, int] | None:
     """
-    Extract a Java method or class block by name using brace-counting.
+    Extract a symbol block using brace-counting (Java, Kotlin, TS, JS, Go, etc.).
 
     Returns (code, start_line_1indexed, end_line_1indexed) or None if not found.
     """
@@ -905,6 +1134,78 @@ def _extract_java_symbol(
     return "\n".join(result_lines), ctx_start + 1, ctx_end + 1
 
 
+def _extract_python_symbol(
+    lines: list[str],
+    symbol_name: str,
+    symbol_type: str,  # "function" or "class"
+    context: int = 3,
+) -> tuple[str, int, int] | None:
+    """
+    Extract a Python function or class block using indentation tracking.
+
+    Returns (code, start_line_1indexed, end_line_1indexed) or None if not found.
+    """
+    keyword = "def" if symbol_type == "function" else "class"
+    pattern = re.compile(
+        rf'^\s*{keyword}\s+{re.escape(symbol_name)}\s*[\(:]',
+    )
+
+    # Find the declaration line
+    decl_line_idx = None
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            # Skip lines inside strings or comments
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            decl_line_idx = i
+            break
+
+    if decl_line_idx is None:
+        return None
+
+    # Walk backwards to include decorators and comments
+    start_idx = decl_line_idx
+    while start_idx > 0:
+        prev = lines[start_idx - 1].strip()
+        if prev.startswith("@") or prev.startswith("#") or prev == "":
+            start_idx -= 1
+        else:
+            break
+
+    # Determine the indentation level of the declaration
+    decl_indent = len(lines[decl_line_idx]) - len(lines[decl_line_idx].lstrip())
+
+    # Find the end of the block by tracking indentation
+    end_idx = decl_line_idx
+    for i in range(decl_line_idx + 1, len(lines)):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip blank lines and comments
+        if not stripped or stripped.startswith("#"):
+            end_idx = i
+            continue
+
+        # If indentation drops to same or less level, block is over
+        current_indent = len(line) - len(line.lstrip())
+        if current_indent <= decl_indent:
+            break
+
+        end_idx = i
+
+    # Add context lines
+    ctx_start = max(0, start_idx - context)
+    ctx_end = min(len(lines) - 1, end_idx + context)
+
+    # Build output with line numbers
+    result_lines = []
+    for i in range(ctx_start, ctx_end + 1):
+        result_lines.append(f"{i + 1:>5} | {lines[i].rstrip()}")
+
+    return "\n".join(result_lines), ctx_start + 1, ctx_end + 1
+
+
 # ---------------------------------------------------------------------------
 # Query functions — Domain Graph
 # ---------------------------------------------------------------------------
@@ -919,15 +1220,14 @@ def get_domain_children(
     parent_id: str,
     relation_filter: str | None = None,
 ) -> list[tuple[DomainEdge, DomainNode]]:
-    """Get child domain nodes (flows of a domain, steps of a flow)."""
+    """Get child domain nodes (flows of a domain, steps of a flow). O(degree) via index."""
     results: list[tuple[DomainEdge, DomainNode]] = []
-    for edge in graph.domain_edges:
+    for edge in graph._domain_edges_by_source.get(parent_id, []):
         if relation_filter and edge.relation != relation_filter:
             continue
-        if edge.source == parent_id:
-            child = get_domain_node_by_id(graph, edge.target)
-            if child:
-                results.append((edge, child))
+        child = get_domain_node_by_id(graph, edge.target)
+        if child:
+            results.append((edge, child))
     return results
 
 
@@ -958,3 +1258,60 @@ def search_domain_nodes(
             n for n in graph.domain_nodes
             if q in f"{n.name} {n.summary}".lower()
         ]
+
+
+# Preferred node types for cross-referencing (class > file > function)
+_CODE_TYPE_PRIORITY = {"class": 0, "file": 1, "function": 2}
+
+
+def resolve_domain_to_code(
+    graph: ProjectGraph,
+    domain_node: DomainNode,
+    limit: int = 3,
+) -> list[Node]:
+    """
+    Resolve a domain step/flow to the most relevant code nodes.
+
+    Strategy:
+      1. Exact file_path match via O(1) _nodes_by_path index → prefer class nodes.
+      2. Prefix match (directory/package path) → list classes in that package.
+
+    Returns at most `limit` code nodes, sorted by type priority (class > file > function).
+    """
+    if not domain_node.file_path:
+        return []
+
+    fp = domain_node.file_path
+
+    # Strategy 1: Exact file path match (O(1) index lookup)
+    exact = graph._nodes_by_path.get(fp, [])
+    if exact:
+        # Prefer class > file > function
+        sorted_nodes = sorted(
+            exact,
+            key=lambda n: _CODE_TYPE_PRIORITY.get(n.type, 99),
+        )
+        return sorted_nodes[:limit]
+
+    # Strategy 2: Directory/package prefix match
+    # Domain steps sometimes point to a package directory, not a file
+    prefix = fp.rstrip("/") + "/"
+    matches: list[Node] = []
+    for path, nodes in graph._nodes_by_path.items():
+        if path.startswith(prefix):
+            for n in nodes:
+                if n.type in ("class", "file"):
+                    matches.append(n)
+
+    if matches:
+        # Deduplicate by ID, prefer class nodes
+        seen: set[str] = set()
+        deduped: list[Node] = []
+        matches.sort(key=lambda n: (_CODE_TYPE_PRIORITY.get(n.type, 99), n.name))
+        for n in matches:
+            if n.id not in seen:
+                seen.add(n.id)
+                deduped.append(n)
+        return deduped[:limit]
+
+    return []
