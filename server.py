@@ -714,7 +714,7 @@ def get_domain_detail(domain_name: str, project: str | None = None) -> str:
             lines.append(f"  • {interaction}")
 
     # Get flows
-    flows = kgl.get_domain_children(graph, matched.id, "contains_flow")
+    flows = kgl.get_domain_children(graph, matched.id, kgl.DOMAIN_REL_CONTAINS_FLOW)
     if flows:
         lines.append(f"\n--- FLOWS ({len(flows)}) ---")
         for _, flow in flows:
@@ -725,8 +725,7 @@ def get_domain_detail(domain_name: str, project: str | None = None) -> str:
             if flow_meta.get("entryPoint"):
                 entry_type = flow_meta.get("entryType", "unknown")
                 lines.append(f"  Entry: {flow_meta['entryPoint']} ({entry_type})")
-            # Get steps for this flow (edge type is "flow_step" in domain-graph.json)
-            steps = kgl.get_domain_children(graph, flow.id, "flow_step")
+            steps = kgl.get_domain_children(graph, flow.id, kgl.DOMAIN_REL_FLOW_STEP)
             if steps:
                 steps.sort(key=lambda x: x[0].weight)  # sort by edge weight = step order
                 for idx, (_, step) in enumerate(steps, 1):
@@ -790,7 +789,7 @@ def get_domain_flow_detail(flow_name: str, project: str | None = None) -> str:
     # Find parent domain
     parent_domain = None
     for edge in graph.domain_edges:
-        if edge.target == matched.id and edge.relation == "contains_flow":
+        if edge.target == matched.id and edge.relation == kgl.DOMAIN_REL_CONTAINS_FLOW:
             parent_domain = kgl.get_domain_node_by_id(graph, edge.source)
             break
 
@@ -811,7 +810,7 @@ def get_domain_flow_detail(flow_name: str, project: str | None = None) -> str:
         lines.append(f"Entry Type:  {entry_type}")
 
     # Steps with full detail
-    steps = kgl.get_domain_children(graph, matched.id, "flow_step")
+    steps = kgl.get_domain_children(graph, matched.id, kgl.DOMAIN_REL_FLOW_STEP)
     if steps:
         steps.sort(key=lambda x: x[0].weight)
         lines.append(f"\n--- STEPS ({len(steps)}) ---")

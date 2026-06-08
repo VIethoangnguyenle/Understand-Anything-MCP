@@ -137,12 +137,20 @@ class DomainNode:
         )
 
 
+# Domain edge relation constants — single source of truth
+DOMAIN_REL_CONTAINS_FLOW = "contains_flow"
+DOMAIN_REL_FLOW_STEP = "flow_step"
+DOMAIN_REL_CROSS_DOMAIN = "cross_domain"
+DOMAIN_REL_TRIGGERS = "triggers"
+DOMAIN_REL_DEPENDS_ON = "depends_on"
+
+
 @dataclass
 class DomainEdge:
     """An edge in the domain graph."""
     source: str
     target: str
-    relation: str       # contains_flow | flow_step | cross_domain | triggers | depends_on
+    relation: str       # DOMAIN_REL_* constants
     weight: float
 
     @classmethod
@@ -881,6 +889,9 @@ def search_by_path(
     Useful for finding all nodes in a package or module.
     Case-insensitive substring match.
 
+    Uses _nodes_by_path index to scan only distinct paths (O(P) where P =
+    unique paths) instead of O(N) over all nodes.
+
     Args:
         graph: The project graph.
         path_pattern: Substring to match in file_path (e.g., "payroll", "com/vietbank/sme").
@@ -893,13 +904,15 @@ def search_by_path(
     pattern = path_pattern.lower()
     results: list[Node] = []
 
-    for node in graph.nodes:
-        if node_type and node.type != node_type:
-            continue
-        if node.file_path and pattern in node.file_path.lower():
-            results.append(node)
-            if len(results) >= limit:
-                break
+    for path, nodes in graph._nodes_by_path.items():
+        if pattern in path.lower():
+            for node in nodes:
+                if node_type and node.type != node_type:
+                    continue
+                results.append(node)
+                if len(results) >= limit:
+                    results.sort(key=lambda n: n.file_path)
+                    return results
 
     results.sort(key=lambda n: n.file_path)
     return results
@@ -1143,26 +1156,34 @@ def _extract_python_symbol(
     """
     Extract a Python function or class block using indentation tracking.
 
+    Handles nested same-name symbols by preferring the shallowest (least-indented)
+    definition. Uses word boundary to avoid matching substrings (e.g., 'process'
+    matching 'process_payment').
+
     Returns (code, start_line_1indexed, end_line_1indexed) or None if not found.
     """
     keyword = "def" if symbol_type == "function" else "class"
+    # Word boundary (\b) prevents partial matches: "validate" won't match "validate_input"
     pattern = re.compile(
-        rf'^\s*{keyword}\s+{re.escape(symbol_name)}\s*[\(:]',
+        rf'^\s*{keyword}\s+{re.escape(symbol_name)}\b\s*[\(:]',
     )
 
-    # Find the declaration line
-    decl_line_idx = None
+    # Find ALL matching declarations, pick the shallowest (top-level preferred)
+    candidates: list[tuple[int, int]] = []  # (indent_level, line_idx)
     for i, line in enumerate(lines):
         if pattern.match(line):
-            # Skip lines inside strings or comments
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            decl_line_idx = i
-            break
+            indent = len(line) - len(line.lstrip())
+            candidates.append((indent, i))
 
-    if decl_line_idx is None:
+    if not candidates:
         return None
+
+    # Prefer shallowest indentation (outermost definition)
+    candidates.sort(key=lambda x: x[0])
+    decl_line_idx = candidates[0][1]
 
     # Walk backwards to include decorators and comments
     start_idx = decl_line_idx
@@ -1296,22 +1317,20 @@ def resolve_domain_to_code(
     # Strategy 2: Directory/package prefix match
     # Domain steps sometimes point to a package directory, not a file
     prefix = fp.rstrip("/") + "/"
+    seen: set[str] = set()
     matches: list[Node] = []
     for path, nodes in graph._nodes_by_path.items():
         if path.startswith(prefix):
             for n in nodes:
-                if n.type in ("class", "file"):
+                if n.type in ("class", "file") and n.id not in seen:
+                    seen.add(n.id)
                     matches.append(n)
+            # Early exit: no need to scan all paths once we have enough candidates
+            if len(matches) >= limit * 3:
+                break
 
     if matches:
-        # Deduplicate by ID, prefer class nodes
-        seen: set[str] = set()
-        deduped: list[Node] = []
         matches.sort(key=lambda n: (_CODE_TYPE_PRIORITY.get(n.type, 99), n.name))
-        for n in matches:
-            if n.id not in seen:
-                seen.add(n.id)
-                deduped.append(n)
-        return deduped[:limit]
+        return matches[:limit]
 
     return []

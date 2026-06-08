@@ -34,10 +34,12 @@ Server hỗ trợ **hai loại đồ thị** đồng thời cho mỗi dự án:
 - 📖 **Trích xuất mã nguồn đa ngôn ngữ** — Đọc source code thực tế của bất kỳ node nào, hỗ trợ trích xuất symbol-level cho **Java, Kotlin, TypeScript, JavaScript, Python, Go, Rust, C#**
 - 🔗 **Tìm đường ngắn nhất** — BFS vô hướng giữa hai node bất kỳ trong đồ thị
 - 🏛️ **Cây kế thừa** — Truy vết extends/implements lên và xuống toàn bộ hệ thống phân cấp class
-- 📁 **Tìm kiếm theo đường dẫn** — Tìm tất cả node theo package/module/thư mục path
+- 📁 **Tìm kiếm theo đường dẫn** — Tìm tất cả node theo package/module/thư mục path (O(P) qua path index)
+- 🌉 **Domain↔Code Cross-reference** — Tự động bridge từ domain step → code node qua `_nodes_by_path` index O(1)
 - 🔄 **Tự động tải lại** — Phát hiện khi file graph thay đổi trên đĩa và tự động reload
 - ✅ **Phân tích độ mới** — So sánh commit hash của graph với HEAD hiện tại qua `git diff`
 - ⚡ **Edge Resolution Layer** — Class và function node tự động kế thừa quan hệ từ file cha, tra cứu O(degree) qua edge index
+- 🧪 **51 unit tests** — Bộ test toàn diện bảo vệ regressions, chạy trong <0.1s
 
 ---
 
@@ -120,7 +122,7 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ---
 
-## Danh sách Tools (15 tools)
+## Danh sách Tools (16 tools)
 
 ### Khám phá & Tổng quan
 
@@ -143,20 +145,21 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 | `find_entry_points` | Các function không được gọi bởi function khác — tiềm năng là API endpoint |
 | `find_impact` | Vùng ảnh hưởng: tất cả node bị ảnh hưởng nếu node này thay đổi (BFS ngược) |
 
-### Truy vấn nâng cao 🆕
+### Truy vấn nâng cao
 
 | Tool | Mô tả |
 |---|---|
 | `find_path` | Tìm đường đi ngắn nhất giữa hai node (BFS vô hướng, tối đa 10 hop) |
 | `get_class_hierarchy` | Cây kế thừa extends/implements — hỗ trợ hướng `up`/`down`/`both` |
-| `search_by_file_path` | Tìm node theo pattern đường dẫn file (case-insensitive, lọc theo type) |
+| `search_by_file_path` | Tìm node theo pattern đường dẫn file (O(P) qua path index, case-insensitive) |
 
 ### Truy vấn Domain Graph
 
 | Tool | Mô tả |
 |---|---|
 | `get_domain_overview` | Tổng quan tất cả domain nghiệp vụ kèm flows, thực thể, và mô tả |
-| `get_domain_detail` | Chi tiết sâu về một domain: thực thể, quy tắc nghiệp vụ, flows, steps |
+| `get_domain_detail` | Chi tiết sâu về một domain: thực thể, quy tắc nghiệp vụ, flows, steps, code cross-ref |
+| `get_domain_flow_detail` | Deep-dive vào một flow cụ thể: entry point, ordered steps, code cross-references |
 
 ---
 
@@ -171,9 +174,10 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 ┌────────────────────▼────────────────────────────────┐
 │                server.py                            │
 │  ┌──────────────────────────────────────────────┐   │
-│  │           FastMCP (15 tools)                 │   │
+│  │           FastMCP (16 tools)                 │   │
 │  │  list_projects · query_nodes · find_impact   │   │
-│  │  find_path · get_class_hierarchy · ...       │   │
+│  │  find_path · get_class_hierarchy             │   │
+│  │  get_domain_flow_detail · ...                │   │
 │  └──────────────────┬───────────────────────────┘   │
 │                     │                               │
 │  ┌──────────────────▼───────────────────────────┐   │
@@ -215,11 +219,11 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ```
 Understand-Anything-MCP/
-├── server.py          # MCP server — định nghĩa 15 tools, registry đa dự án
+├── server.py          # MCP server — định nghĩa 16 tools, registry đa dự án
 ├── kg_loader.py       # Bộ tải graph & query engine — data models, search, traversal, resolution
 ├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz
 ├── tests/             # Bộ test tự động
-│   ├── test_kg_loader.py    # 46 unit tests cho core loader & query engine
+│   ├── test_kg_loader.py    # 51 unit tests cho core loader, query engine & cross-ref
 │   └── fixtures/            # Dữ liệu test JSON mẫu
 │       ├── knowledge-graph.json
 │       └── domain-graph.json
@@ -246,6 +250,7 @@ Understand-Anything-MCP/
    - `_node_index`: tra cứu node theo ID — O(1)
    - `_edges_by_source` / `_edges_by_target`: tra cứu edge — O(degree)
    - `_domain_edges_by_source`: index riêng cho domain graph
+   - `_nodes_by_path`: ánh xạ file_path → nodes — O(1), dùng cho cross-ref và path search
    - Layer enrichment: gán `layer` vào từng node dựa trên ánh xạ layer
 
 3. **Edge Resolution Layer** — Khi truy vấn quan hệ của class/function node:
@@ -259,9 +264,16 @@ Understand-Anything-MCP/
 
 6. **Trích xuất mã nguồn đa ngôn ngữ** — Tự động nhận diện ngôn ngữ qua extension và chọn chiến lược phù hợp:
    - **Brace-counting**: Java, Kotlin, TypeScript, JavaScript, Go, Rust, C#
-   - **Indent-tracking**: Python
+   - **Indent-tracking**: Python (word-boundary regex, shallowest-indent preferred)
 
-7. **Kiểm tra độ mới** chạy lệnh `git diff <commit_phân_tích>..HEAD` để phát hiện số lượng file code đã thay đổi kể từ lần tạo graph gần nhất.
+7. **Domain↔Code Cross-reference** — `resolve_domain_to_code()` bridge domain steps tới code nodes:
+   - Strategy 1: Exact file_path match qua `_nodes_by_path` index (O(1))
+   - Strategy 2: Directory prefix match cho package-level references
+   - Priority: class > file > function
+
+8. **Domain edge type constants** — `DOMAIN_REL_CONTAINS_FLOW`, `DOMAIN_REL_FLOW_STEP`, v.v. — single source of truth, tránh typo
+
+9. **Kiểm tra độ mới** chạy lệnh `git diff <commit_phân_tích>..HEAD` để phát hiện số lượng file code đã thay đổi kể từ lần tạo graph gần nhất.
 
 ---
 
@@ -301,6 +313,12 @@ AI sử dụng: find_path(source_id="class:AuthService", target_id="class:Paymen
 Người dùng: "Tất cả file trong package transfer?"
 
 AI sử dụng: search_by_file_path(path_pattern="transfer", node_type="file") → danh sách file
+```
+
+```
+Người dùng: "Luồng xử lý lương chi tiết thế nào?"
+
+AI sử dụng: get_domain_flow_detail(flow_name="payroll") → entry point, ordered steps, code refs
 ```
 
 ---

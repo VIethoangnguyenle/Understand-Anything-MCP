@@ -27,7 +27,10 @@
       "summary": "End-to-end payment processing flow",
       "tags": ["payment"],
       "complexity": "complex",
-      "domainMeta": {},
+      "domainMeta": {
+        "entryPoint": "processPayment",
+        "entryType": "method_call"
+      },
       "filePath": "src/main/Service.java",
       "lineRange": "10-50"
     },
@@ -64,14 +67,14 @@
     {
       "source": "flow:pay-process",
       "target": "step:validate",
-      "type": "has_step",
+      "type": "flow_step",
       "weight": 1.0
     },
     {
       "source": "flow:pay-process",
       "target": "step:execute",
-      "type": "has_step",
-      "weight": 1.0
+      "type": "flow_step",
+      "weight": 2.0
     }
   ]
 }

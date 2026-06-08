@@ -332,11 +332,52 @@ class TestDomainGraph:
         assert flows[0][1].name == "Process Payment"
 
     def test_domain_steps(self, graph: kgl.ProjectGraph):
-        steps = kgl.get_domain_children(graph, "flow:pay-process", "has_step")
+        steps = kgl.get_domain_children(graph, "flow:pay-process", kgl.DOMAIN_REL_FLOW_STEP)
         assert len(steps) == 2
         names = {s.name for _, s in steps}
         assert "Validate Input" in names
         assert "Execute Payment" in names
+
+    def test_domain_steps_ordered_by_weight(self, graph: kgl.ProjectGraph):
+        """Steps should be orderable by edge weight (step sequence)."""
+        steps = kgl.get_domain_children(graph, "flow:pay-process", kgl.DOMAIN_REL_FLOW_STEP)
+        steps.sort(key=lambda x: x[0].weight)
+        assert steps[0][1].name == "Validate Input"  # weight=1.0
+        assert steps[1][1].name == "Execute Payment"  # weight=2.0
+
+
+# ---------------------------------------------------------------------------
+# Test: Domain-Code Cross-Reference
+# ---------------------------------------------------------------------------
+
+class TestDomainCodeCrossRef:
+    def test_resolve_step_to_code(self, graph: kgl.ProjectGraph):
+        """Domain step with file_path should resolve to code nodes."""
+        step = kgl.get_domain_node_by_id(graph, "step:validate")
+        assert step is not None
+        code_nodes = kgl.resolve_domain_to_code(graph, step)
+        assert len(code_nodes) > 0
+        # Should prefer class over file
+        assert code_nodes[0].type == "class"
+
+    def test_resolve_empty_path(self, graph: kgl.ProjectGraph):
+        """Domain node without file_path should return empty list."""
+        domain = kgl.get_domain_node_by_id(graph, "domain:payment")
+        assert domain is not None
+        assert kgl.resolve_domain_to_code(graph, domain) == []
+
+    def test_nodes_by_path_index_built(self, graph: kgl.ProjectGraph):
+        """_nodes_by_path index should map file paths to nodes."""
+        assert len(graph._nodes_by_path) > 0
+        # Service.java should have multiple nodes (file + class + functions)
+        service_nodes = graph._nodes_by_path.get("src/main/Service.java", [])
+        assert len(service_nodes) >= 2  # at least file + class
+
+    def test_constants_match_fixture(self, graph: kgl.ProjectGraph):
+        """Verify constants match actual edge types in domain graph."""
+        rel_types = {e.relation for e in graph.domain_edges}
+        assert kgl.DOMAIN_REL_CONTAINS_FLOW in rel_types
+        assert kgl.DOMAIN_REL_FLOW_STEP in rel_types
 
 
 # ---------------------------------------------------------------------------
