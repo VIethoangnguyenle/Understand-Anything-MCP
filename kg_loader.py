@@ -185,6 +185,8 @@ class ProjectGraph:
     _node_index: dict[str, Node] = field(default_factory=dict, repr=False)
     _layer_index: dict[str, str] = field(default_factory=dict, repr=False)
     _domain_node_index: dict[str, DomainNode] = field(default_factory=dict, repr=False)
+    _edges_by_source: dict[str, list[Edge]] = field(default_factory=dict, repr=False)
+    _edges_by_target: dict[str, list[Edge]] = field(default_factory=dict, repr=False)
 
     def build_indexes(self) -> None:
         """Build lookup indexes for fast queries."""
@@ -200,6 +202,13 @@ class ProjectGraph:
         # Enrich nodes with layer info
         for node in self.nodes:
             node.layer = self._layer_index.get(node.id, "")
+
+        # Build edge indexes for O(1) source/target lookup
+        self._edges_by_source = {}
+        self._edges_by_target = {}
+        for edge in self.edges:
+            self._edges_by_source.setdefault(edge.source, []).append(edge)
+            self._edges_by_target.setdefault(edge.target, []).append(edge)
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +441,43 @@ def get_node_by_id(graph: ProjectGraph, node_id: str) -> Node | None:
     return graph._node_index.get(node_id)
 
 
+def _resolve_to_parent_file(graph: ProjectGraph, node_id: str) -> str | None:
+    """Find the file node that contains a class or function node via 'contains' edge."""
+    for edge in graph._edges_by_target.get(node_id, []):
+        if edge.relation == "contains":
+            source = get_node_by_id(graph, edge.source)
+            if source and source.type == "file":
+                return edge.source
+    return None
+
+
+def _get_contained_function_ids(graph: ProjectGraph, node_id: str) -> list[str]:
+    """Get IDs of function nodes contained by a file or class node.
+
+    For class nodes: resolves to parent file first, then finds functions.
+    """
+    node = get_node_by_id(graph, node_id)
+    if not node:
+        return []
+
+    file_id = node_id
+    if node.type == "class":
+        parent = _resolve_to_parent_file(graph, node_id)
+        if not parent:
+            return []
+        file_id = parent
+    elif node.type != "file":
+        return []
+
+    result = []
+    for edge in graph._edges_by_source.get(file_id, []):
+        if edge.relation == "contains":
+            target = get_node_by_id(graph, edge.target)
+            if target and target.type == "function":
+                result.append(edge.target)
+    return result
+
+
 def search_nodes(
     graph: ProjectGraph,
     query: str,
@@ -509,24 +555,68 @@ def get_neighbors(
     """
     Get neighboring nodes with their connecting edges.
 
+    Includes transparent resolution for class nodes: when querying a class,
+    also returns edges from its parent file (imports, contained functions)
+    since the KG models these relationships at file level.
+
     Args:
         graph: The project graph.
         node_id: ID of the center node.
         direction: "out" (outgoing), "in" (incoming), "both".
-        relation_filter: Optional filter by relation type (e.g., "calls", "imports").
+        relation_filter: Optional filter by relation type.
     """
     results: list[tuple[Edge, Node]] = []
-    for edge in graph.edges:
-        if relation_filter and edge.relation != relation_filter:
-            continue
-        if direction in ("out", "both") and edge.source == node_id:
+    seen: set[str] = set()
+
+    def _collect_out(src_id: str) -> None:
+        for edge in graph._edges_by_source.get(src_id, []):
+            if relation_filter and edge.relation != relation_filter:
+                continue
+            if edge.target in seen:
+                continue
             target = get_node_by_id(graph, edge.target)
             if target:
+                seen.add(edge.target)
                 results.append((edge, target))
-        if direction in ("in", "both") and edge.target == node_id:
+
+    def _collect_in(tgt_id: str) -> None:
+        for edge in graph._edges_by_target.get(tgt_id, []):
+            if relation_filter and edge.relation != relation_filter:
+                continue
+            if edge.source in seen:
+                continue
             source = get_node_by_id(graph, edge.source)
             if source:
+                seen.add(edge.source)
                 results.append((edge, source))
+
+    # 1. Direct edges for the node itself
+    if direction in ("out", "both"):
+        _collect_out(node_id)
+    if direction in ("in", "both"):
+        _collect_in(node_id)
+
+    # 2. Edge resolution for class nodes
+    #    KG schema is file-centric: imports and contains edges live on file nodes.
+    #    When querying a class, inherit its parent file's outgoing edges so users
+    #    can see what the class imports and which functions it contains.
+    node = get_node_by_id(graph, node_id)
+    if node and node.type == "class":
+        parent_file_id = _resolve_to_parent_file(graph, node_id)
+        if parent_file_id:
+            if direction in ("out", "both"):
+                for edge in graph._edges_by_source.get(parent_file_id, []):
+                    if edge.target == node_id:
+                        continue  # skip file→contains→this_class (self-ref)
+                    if relation_filter and edge.relation != relation_filter:
+                        continue
+                    if edge.target in seen:
+                        continue
+                    target = get_node_by_id(graph, edge.target)
+                    if target:
+                        seen.add(edge.target)
+                        results.append((edge, target))
+
     return results
 
 
@@ -538,11 +628,29 @@ def trace_calls(
     """
     BFS traversal following 'calls' edges from start node.
 
+    Includes resolution for class/file nodes: automatically resolves to
+    contained functions and traces call chains from them.
+
     Returns list of (depth, node_id, node_name).
     """
     visited: set[str] = set()
-    queue: list[tuple[str, int]] = [(start_id, 0)]
     result: list[tuple[int, str, str]] = []
+
+    start_node = get_node_by_id(graph, start_id)
+    if not start_node:
+        return result
+
+    # Resolution: if starting from class or file, resolve to contained functions
+    if start_node.type in ("class", "file"):
+        func_ids = _get_contained_function_ids(graph, start_id)
+        if func_ids:
+            result.append((0, start_id, start_node.name))
+            visited.add(start_id)
+            queue: list[tuple[str, int]] = [(fid, 1) for fid in func_ids]
+        else:
+            queue = [(start_id, 0)]
+    else:
+        queue = [(start_id, 0)]
 
     while queue:
         current_id, depth = queue.pop(0)
@@ -555,10 +663,9 @@ def trace_calls(
         result.append((depth, current_id, label))
 
         if depth < max_depth:
-            for edge in graph.edges:
-                if edge.source == current_id and edge.relation == "calls":
-                    if edge.target not in visited:
-                        queue.append((edge.target, depth + 1))
+            for edge in graph._edges_by_source.get(current_id, []):
+                if edge.relation == "calls" and edge.target not in visited:
+                    queue.append((edge.target, depth + 1))
 
     return result
 
@@ -600,9 +707,8 @@ def find_impact(
         result.append((depth, current_id, label, rel))
 
         if depth < max_depth:
-            for edge in graph.edges:
-                if (edge.target == current_id
-                        and edge.relation in impact_relations
+            for edge in graph._edges_by_target.get(current_id, []):
+                if (edge.relation in impact_relations
                         and edge.source not in visited):
                     queue.append((edge.source, depth + 1, edge.relation))
 

@@ -481,10 +481,13 @@ def get_relationships(
     for rel, items in sorted(by_rel.items()):
         lines.append(f"[{rel.upper()}] ({len(items)}):")
         for edge, neighbor in items:
-            if edge.source == node_id:
-                lines.append(f"  → {neighbor.name} ({neighbor.type})")
+            # Detect resolved edges: neither source nor target is the queried node
+            is_resolved = edge.source != node_id and edge.target != node_id
+            suffix = " (via file)" if is_resolved else ""
+            if edge.source == node_id or is_resolved:
+                lines.append(f"  \u2192 {neighbor.name} ({neighbor.type}){suffix}")
             else:
-                lines.append(f"  ← {neighbor.name} ({neighbor.type})")
+                lines.append(f"  \u2190 {neighbor.name} ({neighbor.type}){suffix}")
             lines.append(f"    ID: {neighbor.id}")
         lines.append("")
 
@@ -504,8 +507,11 @@ def trace_call_chain(
     """
     Trace the function call chain starting from a node (BFS on 'calls' edges).
 
+    For class/file nodes: automatically resolves to contained functions
+    and traces call chains from them.
+
     Args:
-        start_node_id: ID of the starting node (typically a function).
+        start_node_id: ID of the starting node (function, class, or file).
         max_depth:     Max traversal depth (default 3, max 10).
         project:       Project name.
 
