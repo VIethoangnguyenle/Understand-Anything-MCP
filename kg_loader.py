@@ -1284,6 +1284,86 @@ def search_domain_nodes(
 # Preferred node types for cross-referencing (class > file > function)
 _CODE_TYPE_PRIORITY = {"class": 0, "file": 1, "function": 2}
 
+# Boilerplate class name patterns — low relevance for domain step cross-referencing
+_BOILERPLATE_SUFFIXES = (
+    "Application", "Config", "Configuration", "Subscriber",
+    "Listener", "Interceptor", "Filter", "Aspect", "Advice",
+    "Test", "Tests", "Mock", "Stub", "Spec",
+    "Constants", "Utils", "Util", "Helper",
+)
+
+
+def _score_domain_relevance(node: Node, domain_node: DomainNode) -> float:
+    """
+    Score how relevant a code node is to a domain step.
+
+    Higher = more relevant. Considers:
+      - Name tokens appearing in step summary/tags (strong signal)
+      - Boilerplate class name patterns (penalty)
+      - Type priority (class > file)
+
+    Args:
+        node: Code node candidate.
+        domain_node: Domain step/flow being resolved.
+
+    Returns:
+        Float score; higher is better.
+    """
+    score = 0.0
+    node_name = node.name
+    # Strip file extension for comparison (e.g. "FooService.java" → "FooService")
+    base_name = node_name.rsplit(".", 1)[0] if "." in node_name else node_name
+
+    # --- Positive signals ---
+
+    # Break class name into tokens: "TransReqActionSelectorChain" → ["trans", "req", "action", "selector", "chain"]
+    import re as _re
+    name_tokens = [t.lower() for t in _re.findall(r"[A-Z][a-z]+|[a-z]+|[A-Z]+(?=[A-Z]|$)", base_name)]
+
+    # Check against step summary
+    summary_lower = domain_node.summary.lower() if domain_node.summary else ""
+    for token in name_tokens:
+        if len(token) >= 3 and token in summary_lower:
+            score += 20.0  # Strong signal: class name token in step summary
+
+    # Check against step name
+    step_name_lower = domain_node.name.lower() if domain_node.name else ""
+    for token in name_tokens:
+        if len(token) >= 3 and token in step_name_lower:
+            score += 15.0
+
+    # Check against step tags
+    tags_lower = " ".join(domain_node.tags).lower() if domain_node.tags else ""
+    for token in name_tokens:
+        if len(token) >= 3 and token in tags_lower:
+            score += 10.0
+
+    # Full base_name match in summary (e.g. summary mentions "TransReqActionSelectorChain")
+    if base_name.lower() in summary_lower:
+        score += 50.0
+
+    # --- Negative signals ---
+
+    # Penalize boilerplate patterns
+    if any(base_name.endswith(bp) for bp in _BOILERPLATE_SUFFIXES):
+        score -= 50.0
+
+    # Penalize root-level package files (direct children of the package path)
+    # e.g. "pkg/FooApplication.java" is less relevant than "pkg/handler/confirm/FooExecutor.java"
+    rel_path = node.file_path
+    if domain_node.file_path:
+        prefix = domain_node.file_path.rstrip("/") + "/"
+        if rel_path.startswith(prefix):
+            sub_path = rel_path[len(prefix):]
+            depth = sub_path.count("/")
+            # Files in subdirectories are often more specific
+            score += depth * 2.0
+
+    # --- Type priority (minor tiebreaker) ---
+    score -= _CODE_TYPE_PRIORITY.get(node.type, 99) * 0.1
+
+    return score
+
 
 def resolve_domain_to_code(
     graph: ProjectGraph,
@@ -1295,9 +1375,11 @@ def resolve_domain_to_code(
 
     Strategy:
       1. Exact file_path match via O(1) _nodes_by_path index → prefer class nodes.
-      2. Prefix match (directory/package path) → list classes in that package.
+      2. Prefix match (directory/package path) → collect ALL classes in that
+         package, then rank by semantic relevance to the domain step
+         (name-in-summary match, boilerplate penalty, subdirectory depth).
 
-    Returns at most `limit` code nodes, sorted by type priority (class > file > function).
+    Returns at most `limit` code nodes, sorted by relevance.
     """
     if not domain_node.file_path:
         return []
@@ -1314,8 +1396,9 @@ def resolve_domain_to_code(
         )
         return sorted_nodes[:limit]
 
-    # Strategy 2: Directory/package prefix match
-    # Domain steps sometimes point to a package directory, not a file
+    # Strategy 2: Directory/package prefix match with semantic ranking
+    # Domain steps sometimes point to a package directory, not a file.
+    # Collect ALL matching nodes (no early exit) then rank by relevance.
     prefix = fp.rstrip("/") + "/"
     seen: set[str] = set()
     matches: list[Node] = []
@@ -1325,12 +1408,13 @@ def resolve_domain_to_code(
                 if n.type in ("class", "file") and n.id not in seen:
                     seen.add(n.id)
                     matches.append(n)
-            # Early exit: no need to scan all paths once we have enough candidates
-            if len(matches) >= limit * 3:
-                break
 
     if matches:
-        matches.sort(key=lambda n: (_CODE_TYPE_PRIORITY.get(n.type, 99), n.name))
+        # Rank by semantic relevance to the domain step
+        matches.sort(
+            key=lambda n: _score_domain_relevance(n, domain_node),
+            reverse=True,
+        )
         return matches[:limit]
 
     return []

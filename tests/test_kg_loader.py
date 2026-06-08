@@ -62,13 +62,13 @@ def graph() -> kgl.ProjectGraph:
 
 class TestCoreLoader:
     def test_node_count(self, graph: kgl.ProjectGraph):
-        assert len(graph.nodes) == 10
+        assert len(graph.nodes) == 14
 
     def test_edge_count(self, graph: kgl.ProjectGraph):
         assert len(graph.edges) == 11
 
     def test_node_index_built(self, graph: kgl.ProjectGraph):
-        assert len(graph._node_index) == 10
+        assert len(graph._node_index) == 14
 
     def test_edge_indexes_built(self, graph: kgl.ProjectGraph):
         assert len(graph._edges_by_source) > 0
@@ -378,6 +378,107 @@ class TestDomainCodeCrossRef:
         rel_types = {e.relation for e in graph.domain_edges}
         assert kgl.DOMAIN_REL_CONTAINS_FLOW in rel_types
         assert kgl.DOMAIN_REL_FLOW_STEP in rel_types
+
+
+# ---------------------------------------------------------------------------
+# Test: BUG-1 — Prefix Match Semantic Ranking
+# ---------------------------------------------------------------------------
+
+class TestPrefixMatchSemanticRanking:
+    """Tests for resolve_domain_to_code Strategy 2 (prefix match).
+
+    BUG-1: When domain step filePath points to a package directory,
+    the old code returned boilerplate classes (Application, Config)
+    instead of relevant business logic classes.
+    """
+
+    def test_prefix_match_prefers_relevant_over_boilerplate(self, graph: kgl.ProjectGraph):
+        """SelectorChain step should resolve to TransReqActionSelectorChain, not ApprovalApplication."""
+        step = kgl.get_domain_node_by_id(graph, "step:approval-route")
+        assert step is not None
+        code_nodes = kgl.resolve_domain_to_code(graph, step, limit=1)
+        assert len(code_nodes) == 1
+        assert code_nodes[0].name == "TransReqActionSelectorChain"
+
+    def test_prefix_match_executor_step(self, graph: kgl.ProjectGraph):
+        """Execute Confirm step should resolve to TransactionConfirmExecutor, not ApprovalApplication."""
+        step = kgl.get_domain_node_by_id(graph, "step:approval-execute")
+        assert step is not None
+        code_nodes = kgl.resolve_domain_to_code(graph, step, limit=1)
+        assert len(code_nodes) == 1
+        assert code_nodes[0].name == "TransactionConfirmExecutor"
+
+    def test_prefix_match_never_returns_application_class(self, graph: kgl.ProjectGraph):
+        """Boilerplate Application class should never be the top result for domain steps."""
+        for step_id in ["step:approval-route", "step:approval-execute"]:
+            step = kgl.get_domain_node_by_id(graph, step_id)
+            code_nodes = kgl.resolve_domain_to_code(graph, step, limit=1)
+            if code_nodes:
+                assert not code_nodes[0].name.endswith("Application"), \
+                    f"Step '{step.name}' resolved to boilerplate: {code_nodes[0].name}"
+
+    def test_prefix_match_never_returns_config_class(self, graph: kgl.ProjectGraph):
+        """Boilerplate Config class should never be the top result for domain steps."""
+        for step_id in ["step:approval-route", "step:approval-execute"]:
+            step = kgl.get_domain_node_by_id(graph, step_id)
+            code_nodes = kgl.resolve_domain_to_code(graph, step, limit=1)
+            if code_nodes:
+                assert not code_nodes[0].name.endswith("Config"), \
+                    f"Step '{step.name}' resolved to boilerplate: {code_nodes[0].name}"
+
+    def test_prefix_match_respects_limit(self, graph: kgl.ProjectGraph):
+        """limit=3 should return up to 3 results, all ranked by relevance."""
+        step = kgl.get_domain_node_by_id(graph, "step:approval-route")
+        code_nodes = kgl.resolve_domain_to_code(graph, step, limit=3)
+        assert len(code_nodes) >= 2
+        # First result should be most relevant
+        assert code_nodes[0].name == "TransReqActionSelectorChain"
+        # Boilerplate should be ranked last
+        names = [n.name for n in code_nodes]
+        if "ApprovalApplication" in names:
+            assert names.index("ApprovalApplication") > names.index("TransReqActionSelectorChain")
+
+    def test_empty_filepath_returns_empty(self, graph: kgl.ProjectGraph):
+        """Step with empty filePath should return no code references."""
+        step = kgl.get_domain_node_by_id(graph, "step:batch-parallel")
+        assert step is not None
+        code_nodes = kgl.resolve_domain_to_code(graph, step)
+        assert code_nodes == []
+
+
+# ---------------------------------------------------------------------------
+# Test: _score_domain_relevance
+# ---------------------------------------------------------------------------
+
+class TestScoreDomainRelevance:
+    """Direct unit tests for the scoring function."""
+
+    def test_boilerplate_gets_negative_score(self, graph: kgl.ProjectGraph):
+        """Application/Config classes should get negative scores."""
+        step = kgl.get_domain_node_by_id(graph, "step:approval-route")
+        app_node = kgl.get_node_by_id(graph, "class:ApprovalApplication")
+        config_node = kgl.get_node_by_id(graph, "class:InterceptorConfig")
+        selector_node = kgl.get_node_by_id(graph, "class:TransReqActionSelectorChain")
+
+        app_score = kgl._score_domain_relevance(app_node, step)
+        config_score = kgl._score_domain_relevance(config_node, step)
+        selector_score = kgl._score_domain_relevance(selector_node, step)
+
+        assert selector_score > app_score, \
+            f"SelectorChain ({selector_score}) should score higher than Application ({app_score})"
+        assert selector_score > config_score, \
+            f"SelectorChain ({selector_score}) should score higher than Config ({config_score})"
+
+    def test_name_token_in_summary_boosts_score(self, graph: kgl.ProjectGraph):
+        """Class whose name tokens appear in step summary should score higher."""
+        step = kgl.get_domain_node_by_id(graph, "step:approval-execute")
+        executor_node = kgl.get_node_by_id(graph, "class:TransactionConfirmExecutor")
+        app_node = kgl.get_node_by_id(graph, "class:ApprovalApplication")
+
+        executor_score = kgl._score_domain_relevance(executor_node, step)
+        app_score = kgl._score_domain_relevance(app_node, step)
+
+        assert executor_score > app_score
 
 
 # ---------------------------------------------------------------------------

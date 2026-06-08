@@ -35,11 +35,11 @@ Server hỗ trợ **hai loại đồ thị** đồng thời cho mỗi dự án:
 - 🔗 **Tìm đường ngắn nhất** — BFS vô hướng giữa hai node bất kỳ trong đồ thị
 - 🏛️ **Cây kế thừa** — Truy vết extends/implements lên và xuống toàn bộ hệ thống phân cấp class
 - 📁 **Tìm kiếm theo đường dẫn** — Tìm tất cả node theo package/module/thư mục path (O(P) qua path index)
-- 🌉 **Domain↔Code Cross-reference** — Tự động bridge từ domain step → code node qua `_nodes_by_path` index O(1)
+- 🌉 **Domain↔Code Cross-reference** — Tự động bridge từ domain step → code node qua `_nodes_by_path` index O(1), semantic ranking khi prefix match (penalize boilerplate, ưu tiên class liên quan theo tên/mô tả/tags)
 - 🔄 **Tự động tải lại** — Phát hiện khi file graph thay đổi trên đĩa và tự động reload
 - ✅ **Phân tích độ mới** — So sánh commit hash của graph với HEAD hiện tại qua `git diff`
 - ⚡ **Edge Resolution Layer** — Class và function node tự động kế thừa quan hệ từ file cha, tra cứu O(degree) qua edge index
-- 🧪 **51 unit tests** — Bộ test toàn diện bảo vệ regressions, chạy trong <0.1s
+- 🧪 **59 unit tests** — Bộ test toàn diện bảo vệ regressions, chạy trong <0.1s
 
 ---
 
@@ -122,7 +122,7 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ---
 
-## Danh sách Tools (16 tools)
+## Danh sách Tools (17 tools)
 
 ### Khám phá & Tổng quan
 
@@ -174,7 +174,7 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 ┌────────────────────▼────────────────────────────────┐
 │                server.py                            │
 │  ┌──────────────────────────────────────────────┐   │
-│  │           FastMCP (16 tools)                 │   │
+│  │           FastMCP (17 tools)                 │   │
 │  │  list_projects · query_nodes · find_impact   │   │
 │  │  find_path · get_class_hierarchy             │   │
 │  │  get_domain_flow_detail · ...                │   │
@@ -219,11 +219,11 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ```
 Understand-Anything-MCP/
-├── server.py          # MCP server — định nghĩa 16 tools, registry đa dự án
+├── server.py          # MCP server — định nghĩa 17 tools, registry đa dự án
 ├── kg_loader.py       # Bộ tải graph & query engine — data models, search, traversal, resolution
 ├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz
 ├── tests/             # Bộ test tự động
-│   ├── test_kg_loader.py    # 51 unit tests cho core loader, query engine & cross-ref
+│   ├── test_kg_loader.py    # 59 unit tests cho core loader, query engine & cross-ref
 │   └── fixtures/            # Dữ liệu test JSON mẫu
 │       ├── knowledge-graph.json
 │       └── domain-graph.json
@@ -268,7 +268,11 @@ Understand-Anything-MCP/
 
 7. **Domain↔Code Cross-reference** — `resolve_domain_to_code()` bridge domain steps tới code nodes:
    - Strategy 1: Exact file_path match qua `_nodes_by_path` index (O(1))
-   - Strategy 2: Directory prefix match cho package-level references
+   - Strategy 2: Directory prefix match với **semantic ranking** — khi `filePath` trỏ vào package directory:
+     - Collect tất cả class/file nodes trong package (không early exit)
+     - Scoring: +20 cho tên token khớp summary, +15 khớp step name, +10 khớp tags, +50 cho full class name match
+     - Penalty: −50 cho boilerplate patterns (`Application`, `Config`, `Interceptor`, `Test`, `Utils`, v.v.)
+     - Bonus: +2/level cho files nằm sâu trong subdirectory (thường cụ thể hơn)
    - Priority: class > file > function
 
 8. **Domain edge type constants** — `DOMAIN_REL_CONTAINS_FLOW`, `DOMAIN_REL_FLOW_STEP`, v.v. — single source of truth, tránh typo

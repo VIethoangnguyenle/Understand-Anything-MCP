@@ -55,6 +55,39 @@
       "domainMeta": {},
       "filePath": "src/main/Service.java",
       "lineRange": "22-40"
+    },
+    {
+      "id": "step:approval-route",
+      "type": "step",
+      "name": "Route via SelectorChain",
+      "summary": "Routes the transaction confirm request through the action selector chain for approval",
+      "tags": ["approval", "routing", "selector"],
+      "complexity": "complex",
+      "domainMeta": {},
+      "filePath": "src/main/approval",
+      "lineRange": ""
+    },
+    {
+      "id": "step:approval-execute",
+      "type": "step",
+      "name": "Execute Confirm",
+      "summary": "Executes the confirm action after approval routing using the executor",
+      "tags": ["approval", "confirm", "executor"],
+      "complexity": "moderate",
+      "domainMeta": {},
+      "filePath": "src/main/approval",
+      "lineRange": ""
+    },
+    {
+      "id": "step:batch-parallel",
+      "type": "step",
+      "name": "Parallel Batch Processing",
+      "summary": "Process batch items in parallel",
+      "tags": ["batch"],
+      "complexity": "complex",
+      "domainMeta": {},
+      "filePath": "",
+      "lineRange": ""
     }
   ],
   "edges": [

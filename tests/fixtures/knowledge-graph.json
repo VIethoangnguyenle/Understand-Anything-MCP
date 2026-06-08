@@ -105,6 +105,46 @@
       "tags": ["gateway"],
       "complexity": "moderate",
       "sizeLines": 100
+    },
+    {
+      "id": "class:ApprovalApplication",
+      "type": "class",
+      "name": "ApprovalApplication",
+      "filePath": "src/main/approval/ApprovalApplication.java",
+      "summary": "Spring Boot application entry point",
+      "tags": ["spring", "bootstrap"],
+      "complexity": "simple",
+      "sizeLines": 15
+    },
+    {
+      "id": "class:InterceptorConfig",
+      "type": "class",
+      "name": "InterceptorConfig",
+      "filePath": "src/main/approval/config/InterceptorConfig.java",
+      "summary": "Configures HTTP interceptors for the approval service",
+      "tags": ["config"],
+      "complexity": "simple",
+      "sizeLines": 30
+    },
+    {
+      "id": "class:TransReqActionSelectorChain",
+      "type": "class",
+      "name": "TransReqActionSelectorChain",
+      "filePath": "src/main/approval/handler/confirm/TransReqActionSelectorChain.java",
+      "summary": "Routes transaction confirm requests through the selector chain",
+      "tags": ["approval", "routing", "selector"],
+      "complexity": "complex",
+      "sizeLines": 120
+    },
+    {
+      "id": "class:TransactionConfirmExecutor",
+      "type": "class",
+      "name": "TransactionConfirmExecutor",
+      "filePath": "src/main/approval/handler/confirm/TransactionConfirmExecutor.java",
+      "summary": "Executes single transaction confirm after approval routing",
+      "tags": ["approval", "executor", "confirm"],
+      "complexity": "complex",
+      "sizeLines": 90
     }
   ],
   "edges": [
