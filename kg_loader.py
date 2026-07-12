@@ -465,6 +465,20 @@ def get_repository_head(root_path: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def _graph_health(graph: ProjectGraph) -> dict[str, Any]:
+    """Minimal health verdict, built for observed failures only (dogfood F1/F2):
+    a fabricated skeleton graph — nodes but zero edges, no analysis timestamp —
+    must not present as a healthy graph."""
+    warnings: list[str] = []
+    degraded = False
+    if len(graph.nodes) > 1 and not graph.edges:
+        warnings.append("graph has nodes but no edges — analysis phases likely skipped")
+        degraded = True
+    if not graph.analyzed_at:
+        warnings.append("meta.json missing analyzedAt")
+    return {"status": "DEGRADED" if degraded else "HEALTHY", "warnings": warnings}
+
+
 def build_graph_metadata(graph: ProjectGraph) -> dict[str, Any]:
     """Structured, JSON-safe snapshot of graph state. Single source of truth for
     machine consumers; get_graph_stats remains the human rendering."""
@@ -483,6 +497,7 @@ def build_graph_metadata(graph: ProjectGraph) -> dict[str, Any]:
         },
         "repository": {"head": get_repository_head(graph.root_path)},
         "freshness": freshness,
+        "health": _graph_health(graph),
     }
 
 
