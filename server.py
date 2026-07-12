@@ -14,6 +14,7 @@ Run dev:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -276,6 +277,38 @@ def get_graph_stats(project: str | None = None) -> str:
             lines.append(f"    ... and {freshness['stale_file_count'] - 20} more")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool 2b: get_graph_metadata (structured)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_graph_metadata(project: str | None = None) -> str:
+    """
+    Structured JSON snapshot of a project's graph state: identity, node/edge
+    counts, graph commit, repository HEAD and freshness. Machine counterpart
+    of get_graph_stats — parse it instead of the text output.
+
+    Args:
+        project: Project name. Leave empty if only one project is loaded.
+
+    Returns:
+        JSON string: {"ok": true, ...metadata} or
+        {"ok": false, "error": {"code", "message", "remediation"}}.
+    """
+    try:
+        graph = _resolve_project(project)
+    except ValueError as e:
+        return json.dumps({
+            "ok": False,
+            "error": {
+                "code": "unknown_project",
+                "message": str(e),
+                "remediation": "Call list_projects and pass an exact project name.",
+            },
+        })
+    return json.dumps({"ok": True, **kgl.build_graph_metadata(graph)})
 
 
 # ---------------------------------------------------------------------------

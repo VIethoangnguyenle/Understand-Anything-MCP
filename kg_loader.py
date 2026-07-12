@@ -453,6 +453,39 @@ def check_freshness(graph: ProjectGraph) -> dict[str, Any]:
     return result
 
 
+def get_repository_head(root_path: str) -> str:
+    """Current HEAD of the repo at root_path; '' if not a repo / git missing."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root_path, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def build_graph_metadata(graph: ProjectGraph) -> dict[str, Any]:
+    """Structured, JSON-safe snapshot of graph state. Single source of truth for
+    machine consumers; get_graph_stats remains the human rendering."""
+    freshness = check_freshness(graph)
+    return {
+        "contract_version": 1,
+        "project": graph.name,
+        "root_path": graph.root_path,
+        "graph": {
+            "node_count": len(graph.nodes),
+            "edge_count": len(graph.edges),
+            "domain_node_count": len(graph.domain_nodes),
+            "layer_count": len(graph.layers),
+            "graph_commit": graph.git_commit_hash,
+            "analyzed_at": graph.analyzed_at,
+        },
+        "repository": {"head": get_repository_head(graph.root_path)},
+        "freshness": freshness,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Query functions — Code Graph
 # ---------------------------------------------------------------------------
