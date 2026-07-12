@@ -47,3 +47,40 @@ def test_head_empty_outside_git_repo(tmp_path):
     meta = kgl.build_graph_metadata(g)
     assert meta["repository"]["head"] == ""
     assert meta["freshness"]["status"] == "UNKNOWN"
+
+
+def _n(i):
+    return kgl.Node.from_dict({"id": f"file:f{i}", "type": "file", "name": f"f{i}",
+                               "filePath": f"src/f{i}.py"})
+
+
+def test_health_degraded_for_edgeless_skeleton(tmp_path):
+    """Dogfood F1/F2: a fabricated graph (many nodes, zero edges) must not
+    present as healthy."""
+    g = kgl.ProjectGraph(name="p", root_path=str(tmp_path), project_info={},
+                         nodes=[_n(1), _n(2), _n(3)])
+    meta = kgl.build_graph_metadata(g)
+    assert meta["health"]["status"] == "DEGRADED"
+    assert any("no edges" in w for w in meta["health"]["warnings"])
+
+
+def test_health_warns_on_missing_analyzed_at(tmp_path):
+    g = kgl.ProjectGraph(name="p", root_path=str(tmp_path), project_info={},
+                         nodes=[_n(1), _n(2)],
+                         edges=[kgl.Edge.from_dict({"source": "file:f1",
+                                                    "target": "file:f2",
+                                                    "type": "imports"})])
+    meta = kgl.build_graph_metadata(g)
+    assert meta["health"]["status"] == "HEALTHY"  # edges exist
+    assert any("analyzedAt" in w for w in meta["health"]["warnings"])
+
+
+def test_health_clean_for_real_graph(tmp_path):
+    g = kgl.ProjectGraph(name="p", root_path=str(tmp_path), project_info={},
+                         nodes=[_n(1), _n(2)],
+                         edges=[kgl.Edge.from_dict({"source": "file:f1",
+                                                    "target": "file:f2",
+                                                    "type": "imports"})],
+                         analyzed_at="2026-07-12T00:00:00Z")
+    meta = kgl.build_graph_metadata(g)
+    assert meta["health"] == {"status": "HEALTHY", "warnings": []}
