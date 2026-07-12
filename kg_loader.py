@@ -961,6 +961,21 @@ def detect_language(file_path: str) -> tuple[str, str]:
     return _LANG_MAP.get(ext, ("", "brace"))  # default to brace-counting
 
 
+def _contained_path(root: str, rel_path: str) -> str | None:
+    """Resolve rel_path against root; return the absolute path only if it exists
+    and its real path stays inside root (graphs are untrusted input)."""
+    if not rel_path or "\x00" in rel_path or os.path.isabs(rel_path):
+        return None
+    root_real = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(root_real, rel_path))
+    try:
+        if os.path.commonpath([root_real, candidate]) != root_real:
+            return None
+    except ValueError:  # different drives (Windows)
+        return None
+    return candidate if os.path.exists(candidate) else None
+
+
 def _resolve_file_path(graph: ProjectGraph, node: Node) -> str | None:
     """
     Resolve a node's file_path to an absolute path on disk.
@@ -972,12 +987,16 @@ def _resolve_file_path(graph: ProjectGraph, node: Node) -> str | None:
     Upstream nodes (ID starting with 'upstream:') that aren't found in the
     project root are resolved against UPSTREAM_ROOTS env var (comma-separated).
 
+    Graphs are agent-generated JSON, so file_path is untrusted: absolute paths,
+    .. traversal, NUL bytes and symlink escapes are rejected — the resolved
+    real path must stay inside the containing root.
+
     Returns:
-        Absolute path if file exists, None otherwise.
+        Absolute path if file exists inside a permitted root, None otherwise.
     """
     # Try project root first
-    candidate = os.path.join(graph.root_path, node.file_path)
-    if os.path.exists(candidate):
+    candidate = _contained_path(graph.root_path, node.file_path)
+    if candidate is not None:
         return candidate
 
     # For upstream nodes, try UPSTREAM_ROOTS
@@ -987,8 +1006,8 @@ def _resolve_file_path(graph: ProjectGraph, node: Node) -> str | None:
             root = root.strip()
             if not root:
                 continue
-            candidate = os.path.join(root, node.file_path)
-            if os.path.exists(candidate):
+            candidate = _contained_path(root, node.file_path)
+            if candidate is not None:
                 return candidate
 
     return None
