@@ -134,6 +134,7 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 |---|---|
 | `list_projects` | Liệt kê tất cả dự án đã đăng ký kèm số lượng node/edge và thông tin domain |
 | `get_graph_stats` | Thống kê toàn diện: phân bố type, layers, phân tích độ mới của graph |
+| `get_graph_metadata` | Snapshot JSON có cấu trúc: counts, graph commit, repository HEAD, freshness (bản machine-readable của `get_graph_stats`) |
 | `get_tour` | Tour hướng dẫn dự án — các điểm dừng được chọn lọc giải thích các thành phần chính |
 
 ### Truy vấn Code Graph
