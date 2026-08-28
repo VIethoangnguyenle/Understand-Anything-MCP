@@ -167,11 +167,18 @@ def list_projects() -> str:
             type_counts[n.type] = type_counts.get(n.type, 0) + 1
 
         domains = [dn for dn in graph.domain_nodes if dn.type == "domain"]
+        cov = kgl.compute_symbol_coverage(graph)
+        cov_line = (
+            "n/a"
+            if cov["status"] == "UNKNOWN"
+            else f"{cov['coverage_pct']}% ({cov['status']})"
+        )
 
         lines.append(
             f"■ {name}\n"
             f"  Root:    {graph.root_path}\n"
             f"  Nodes:   {len(graph.nodes)} | Edges: {len(graph.edges)}\n"
+            f"  Coverage: {cov_line}\n"
             f"  Layers:  {len(graph.layers)} | Tour stops: {len(graph.tour)}\n"
             f"  Domains: {len(domains)} | Domain nodes: {len(graph.domain_nodes)}\n"
             f"  Types:   {', '.join(f'{t}({c})' for t, c in sorted(type_counts.items(), key=lambda x: -x[1]))}\n"
@@ -248,6 +255,41 @@ def get_graph_stats(project: str | None = None) -> str:
         lines.append(f"\nTop layers (by node count):")
         for l, c in sorted(layer_count.items(), key=lambda x: -x[1])[:10]:
             lines.append(f"  {l:<40} {c} nodes")
+
+    # --- Symbol Coverage ---
+    # Node-type counts alone cannot tell a rich graph from a file-and-import
+    # skeleton: both show hundreds of `file` nodes. Coverage is the number that
+    # distinguishes them, so it belongs next to the counts, not behind a flag.
+    cov = kgl.compute_symbol_coverage(graph)
+    if cov["status"] != "UNKNOWN":
+        cov_emoji = {"OK": "✅", "LOW": "⚠️", "EMPTY": "🔴"}.get(
+            cov["status"], "❓"
+        )
+        lines.append(f"\n{'='*50}")
+        lines.append(
+            f"SYMBOL COVERAGE: {cov_emoji} {cov['status']} ({cov['coverage_pct']}%)"
+        )
+        lines.append(f"{'='*50}")
+        lines.append(
+            f"  {cov['covered_files']} of {cov['expected_files']} source file(s) "
+            f"yielded a function/class."
+        )
+        skipped = cov["total_files"] - cov["expected_files"]
+        if skipped:
+            lines.append(
+                f"  {skipped} file(s) excluded (barrels, type-only modules, "
+                f"styles, assets)."
+            )
+        if cov["status"] == "EMPTY":
+            lines.append(
+                "  → No logic extracted. The graph is a file/import skeleton; "
+                "re-index this project."
+            )
+        elif cov["status"] == "LOW":
+            lines.append(
+                "  → Most source files produced no symbol. Treat call-graph "
+                "and impact queries on this project as incomplete."
+            )
 
     # --- Freshness Analysis ---
     freshness = kgl.check_freshness(graph)

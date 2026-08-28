@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -333,6 +334,93 @@ def get_graph_mtimes(project_root: str) -> tuple[float, float]:
     return (kg_mtime, dg_mtime)
 
 
+# ---------------------------------------------------------------------------
+# Symbol coverage
+# ---------------------------------------------------------------------------
+
+# Files that legitimately hold no function/class symbol. Counting them against
+# coverage makes every healthy TypeScript project look broken -- a React app is
+# largely barrels, type modules, constant tables and stylesheets.
+_SYMBOL_FREE_NAME = re.compile(
+    r"(^|/)index\.(ts|tsx|js|jsx|mjs|cjs)$"
+    r"|\.d\.ts$"
+    r"|\.(types?|enums?|constants?|contracts?|schemas?|config|conf)\.(ts|tsx|js|jsx|mjs|cjs)$",
+    re.IGNORECASE,
+)
+
+_SYMBOL_FREE_EXT = {
+    ".css", ".scss", ".sass", ".less", ".json", ".jsonc", ".md", ".mdx",
+    ".txt", ".yaml", ".yml", ".toml", ".ini", ".xml", ".html", ".svg",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".lock", ".env",
+    ".properties", ".csv", ".sql", ".gitignore", ".editorconfig",
+}
+
+_SYMBOL_TYPES = {"function", "class", "method"}
+
+
+def _expects_symbols(file_path: str) -> bool:
+    """True when a file of this kind should normally yield at least one symbol."""
+    if not file_path:
+        return False
+    if _SYMBOL_FREE_NAME.search(file_path):
+        return False
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in _SYMBOL_FREE_EXT:
+        return False
+    return bool(ext)
+
+
+def compute_symbol_coverage(graph: ProjectGraph) -> dict[str, Any]:
+    """
+    Fraction of source files that produced at least one function/class node.
+
+    Node-type counts alone hide a hollow graph: a project can register hundreds
+    of `file` nodes, look populated in every listing, and still carry almost no
+    extracted logic. Coverage is what makes that visible.
+
+    Returns dict with:
+      - total_files:    every `file` node
+      - expected_files: files that should normally yield a symbol
+      - covered_files:  of those, how many actually did
+      - coverage_pct:   covered / expected, 0-100 (-1 when nothing is expected)
+      - status:         'OK' | 'LOW' | 'EMPTY' | 'UNKNOWN'
+    """
+    file_paths = {
+        n.file_path for n in graph.nodes if n.type == "file" and n.file_path
+    }
+    with_symbols = {
+        n.file_path
+        for n in graph.nodes
+        if n.type in _SYMBOL_TYPES and n.file_path
+    }
+
+    expected = {f for f in file_paths if _expects_symbols(f)}
+    covered = expected & with_symbols
+
+    result: dict[str, Any] = {
+        "total_files": len(file_paths),
+        "expected_files": len(expected),
+        "covered_files": len(covered),
+        "coverage_pct": -1,
+        "status": "UNKNOWN",
+    }
+
+    # Too few source files to judge -- a docs-only or config-only project.
+    if len(expected) < 5:
+        return result
+
+    pct = round(len(covered) * 100 / len(expected))
+    result["coverage_pct"] = pct
+    if len(covered) == 0:
+        # A file-and-import skeleton: the graph exists but holds no logic.
+        result["status"] = "EMPTY"
+    elif pct < 30:
+        result["status"] = "LOW"
+    else:
+        result["status"] = "OK"
+    return result
+
+
 def check_freshness(graph: ProjectGraph) -> dict[str, Any]:
     """
     Check how fresh the knowledge graph is by comparing its gitCommitHash
@@ -376,10 +464,23 @@ def check_freshness(graph: ProjectGraph) -> dict[str, Any]:
         return result
 
     # Run git diff to find changed files
+    # ".ts" without ".tsx" made every React/Vue codebase look permanently fresh:
+    # UI work touches .tsx/.vue almost exclusively, so a graph could be months
+    # out of date and still report FRESH.
     code_extensions = {
-        ".java", ".kt", ".py", ".js", ".ts", ".go", ".rs",
-        ".xml", ".yaml", ".yml", ".properties", ".json",
-        ".sql", ".gradle", ".kts",
+        # JS/TS ecosystem
+        ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
+        ".vue", ".svelte", ".astro",
+        # styles count: a design-system change is a real code change
+        ".css", ".scss", ".sass", ".less",
+        # JVM
+        ".java", ".kt", ".kts", ".gradle", ".scala", ".groovy",
+        # other languages
+        ".py", ".go", ".rs", ".rb", ".php", ".cs", ".swift", ".dart",
+        ".c", ".h", ".cpp", ".hpp", ".cc", ".m", ".mm", ".ex", ".exs",
+        # infra & schema
+        ".sql", ".sh", ".bash", ".tf", ".proto", ".graphql", ".gql",
+        ".xml", ".yaml", ".yml", ".toml", ".properties", ".json",
     }
 
     changed_files: list[str] | None = None
@@ -398,8 +499,12 @@ def check_freshness(graph: ProjectGraph) -> dict[str, Any]:
             result["diff_method"] = "git_diff_commit"
         else:
             log.info("git diff with commit hash failed (commit may not exist locally), falling back to --since")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    except FileNotFoundError:
+        # No `git` binary. Every project then reports UNKNOWN forever with no
+        # hint why, which is exactly how a broken freshness check goes unnoticed.
+        log.warning("`git` executable not found - freshness will always be UNKNOWN")
+    except subprocess.TimeoutExpired:
+        log.warning("git diff timed out after 15s in %s", graph.root_path)
 
     # Strategy 2: git log --since=<analyzedAt> (fallback when commit is from another repo)
     if changed_files is None and graph.analyzed_at:
@@ -424,8 +529,10 @@ def check_freshness(graph: ProjectGraph) -> dict[str, Any]:
                 result["diff_method"] = "git_log_since"
             else:
                 log.warning("git log --since failed (rc=%d)", proc.returncode)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        except FileNotFoundError:
+            log.warning("`git` executable not found - freshness will always be UNKNOWN")
+        except subprocess.TimeoutExpired:
+            log.warning("git log timed out after 15s in %s", graph.root_path)
 
     if changed_files is None:
         result["status"] = "UNKNOWN"
