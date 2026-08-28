@@ -44,6 +44,7 @@ Server hỗ trợ **hai loại đồ thị** đồng thời cho mỗi dự án:
 - ✅ **Phân tích độ mới** — So sánh commit hash của graph với HEAD hiện tại qua `git diff`
 - ⚡ **Edge Resolution Layer** — Class và function node tự động kế thừa quan hệ từ file cha, tra cứu O(degree) qua edge index
 - 🧪 **59 unit tests** — Bộ test toàn diện bảo vệ regressions, chạy trong <0.1s
+- 📚 **Skill kèm theo** — `codebase-explain`: hướng dẫn AI giải thích sâu file/symbol/module/business flow bằng evidence read-only từ server (output có cấu trúc, gắn freshness, không bịa node ID)
 
 ---
 
@@ -168,6 +169,29 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ---
 
+## Skills
+
+Thư mục `skills/` chứa các [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills) tương tác với server này.
+
+### `codebase-explain`
+
+Giải thích sâu một file, symbol, module, class, function hoặc business flow bằng **evidence read-only** từ server — không đọc source local, không bịa node ID/path/line.
+
+```text
+/codebase-explain [project-name] [file-path|symbol|module|business-flow]
+```
+
+Skill quy định:
+
+- **Freshness gate** — luôn kiểm tra `get_graph_stats` và gán `FRESH|STALE|UNKNOWN` trước mọi claim quan trọng.
+- **Exact-match validation** — kết quả fuzzy chỉ là candidate; phải khớp đúng path/symbol/flow name mới được deep dive, nếu không chuyển sang ambiguity review.
+- **9-section output** — output tiếng Việt có cấu trúc, mọi claim gắn `Source/Project/Freshness/Tool/Claim`.
+- **Ambiguity gate** — target mơ hồ sinh file review HTML thay vì đoán.
+
+> Skill là markdown thuần — thêm vào `.claude/skills/` của project hoặc cài làm plugin để dùng `/codebase-explain`.
+
+---
+
 ## Kiến trúc
 
 ```mermaid
@@ -219,6 +243,9 @@ Understand-Anything-MCP/
 │   ├── check-graph-ignore.sh    # Kiểm tra .understand-anything/ được ignore đúng
 │   ├── revert-gitignore-graph.sh  # Hoán .gitignore sang .git/info/exclude
 │   └── test/                  # Harness test (git repo giả + docker giả)
+├── skills/            # Claude Code skills
+│   └── codebase-explain/
+│       └── SKILL.md           # Giải thích sâu codebase bằng evidence read-only
 ├── tests/             # Bộ test tự động
 │   ├── test_kg_loader.py    # Unit tests cho core loader, query engine & cross-ref
 │   ├── test_graph_metadata.py  # Tests cho get_graph_metadata
