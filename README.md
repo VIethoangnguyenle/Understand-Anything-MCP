@@ -170,54 +170,36 @@ Sử dụng cùng cấu trúc — đặt `command` là `uv`, truyền đường 
 
 ## Kiến trúc
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   MCP Client                        │
-│          (Gemini CLI, Claude, Cursor...)             │
-└────────────────────┬────────────────────────────────┘
-                     │ stdio (MCP Protocol)
-┌────────────────────▼────────────────────────────────┐
-│                server.py                            │
-│  ┌──────────────────────────────────────────────┐   │
-│  │           FastMCP (17 tools)                 │   │
-│  │  list_projects · query_nodes · find_impact   │   │
-│  │  find_path · get_class_hierarchy             │   │
-│  │  get_domain_flow_detail · ...                │   │
-│  └──────────────────┬───────────────────────────┘   │
-│                     │                               │
-│  ┌──────────────────▼───────────────────────────┐   │
-│  │       Multi-Project Registry                 │   │
-│  │   cache theo mtime · tự động reload · resolve│   │
-│  └──────────────────┬───────────────────────────┘   │
-└─────────────────────┼───────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────┐
-│              kg_loader.py                           │
-│  ┌────────────────────────────────────────────────┐ │
-│  │  Tầng Dữ liệu (Data Layer)                    │ │
-│  │  Node · Edge · LayerInfo · TourStop            │ │
-│  │  DomainNode · DomainEdge · ProjectGraph        │ │
-│  ├────────────────────────────────────────────────┤ │
-│  │  Edge Resolution Layer                         │ │
-│  │  class/function → file edge inheritance        │ │
-│  │  O(1) node index · O(degree) edge index        │ │
-│  ├────────────────────────────────────────────────┤ │
-│  │  Query Engine                                  │ │
-│  │  fuzzy search · BFS traversal · impact analysis│ │
-│  │  shortest path · class hierarchy · path search │ │
-│  ├────────────────────────────────────────────────┤ │
-│  │  Source Extraction (đa ngôn ngữ)               │ │
-│  │  brace-counting (Java/Kotlin/TS/JS/Go/Rust/C#) │ │
-│  │  indent-tracking (Python)                      │ │
-│  └────────────────────────────────────────────────┘ │
-└─────────────────────┬───────────────────────────────┘
-                      │ đọc JSON
-┌─────────────────────▼───────────────────────────────┐
-│     .understand-anything/                           │
-│     ├── knowledge-graph.json  (đồ thị code-level)   │
-│     ├── domain-graph.json     (đồ thị nghiệp vụ)    │
-│     └── meta.json             (metadata phân tích)   │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Client["MCP Client<br/>Gemini CLI · Claude · Cursor"]
+
+    subgraph Server["server.py"]
+        FastMCP["FastMCP · 17 tools<br/>list_projects · query_nodes · find_impact<br/>find_path · get_class_hierarchy · get_domain_flow_detail · ..."]
+        Registry["Multi-Project Registry<br/>cache theo mtime · tự động reload · resolve"]
+    end
+
+    subgraph Loader["kg_loader.py"]
+        direction TB
+        DataLayer["Tầng Dữ liệu<br/>Node · Edge · LayerInfo · TourStop<br/>DomainNode · DomainEdge · ProjectGraph"]
+        EdgeRes["Edge Resolution Layer<br/>class/function → file edge inheritance<br/>O(1) node index · O(degree) edge index"]
+        Query["Query Engine<br/>fuzzy search · BFS traversal · impact analysis<br/>shortest path · class hierarchy · path search"]
+        Source["Source Extraction<br/>brace-counting Java/Kotlin/TS/JS/Go/Rust/C#<br/>indent-tracking Python"]
+        DataLayer --> EdgeRes --> Query --> Source
+    end
+
+    subgraph UA[".understand-anything/"]
+        KG["knowledge-graph.json<br/>đồ thị code-level"]
+        DG["domain-graph.json<br/>đồ thị nghiệp vụ"]
+        Meta["meta.json<br/>metadata phân tích"]
+    end
+
+    Client -->|"stdio · MCP Protocol"| Server
+    FastMCP --> Registry
+    Registry --> DataLayer
+    Source -->|"đọc JSON"| KG
+    Source -.->|"đọc JSON"| DG
+    Source -.->|"đọc JSON"| Meta
 ```
 
 ### Cấu trúc tệp
