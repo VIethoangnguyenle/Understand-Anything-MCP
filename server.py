@@ -23,6 +23,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 import kg_loader as kgl
+import metrics
 
 # ---------------------------------------------------------------------------
 # Logging — stderr only (stdout = MCP protocol channel)
@@ -131,6 +132,12 @@ mcp = FastMCP(
         "get_domain_overview/get_domain_detail for business domains."
     ),
 )
+
+
+# Instrument every tool registered below. Must stay above the first @mcp.tool()
+# — decorators run at import time in source order, so a tool declared before
+# this line would silently go unmeasured.
+metrics.install(mcp)
 
 
 # ---------------------------------------------------------------------------

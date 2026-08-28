@@ -208,7 +208,8 @@ flowchart TD
 Understand-Anything-MCP/
 ├── server.py          # MCP server — định nghĩa 17 tools, registry đa dự án
 ├── kg_loader.py       # Bộ tải graph & query engine — data models, search, traversal, resolution
-├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz
+├── metrics.py         # Usage metrics — 1 JSON line / tool call, rotating file, fail-safe
+├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz, pytest (dev)
 ├── scripts/           # Bộ script vận hành — clone, pull, re-index, gitignore
 │   ├── clone-repos.sh       # Clone repo từ manifest CSV vào REPO_ROOT (idempotent)
 │   ├── git-pull.sh          # Pull toàn bộ repo + report JSON
@@ -219,7 +220,11 @@ Understand-Anything-MCP/
 │   ├── revert-gitignore-graph.sh  # Hoán .gitignore sang .git/info/exclude
 │   └── test/                  # Harness test (git repo giả + docker giả)
 ├── tests/             # Bộ test tự động
-│   ├── test_kg_loader.py    # 59 unit tests cho core loader, query engine & cross-ref
+│   ├── test_kg_loader.py    # Unit tests cho core loader, query engine & cross-ref
+│   ├── test_graph_metadata.py  # Tests cho get_graph_metadata
+│   ├── test_path_safety.py     # Tests cho path containment
+│   ├── test_metrics.py         # Unit tests cho metrics writer
+│   ├── test_metrics_integration.py  # Wiring metrics vào FastMCP tool surface
 │   └── fixtures/            # Dữ liệu test JSON mẫu
 │       ├── knowledge-graph.json
 │       └── domain-graph.json
@@ -235,6 +240,47 @@ Understand-Anything-MCP/
 |---|---|---|
 | `PROJECT_ROOTS` | **Có** | Danh sách đường dẫn tuyệt đối phân cách bằng dấu phẩy tới các dự án có thư mục `.understand-anything/` |
 | `UPSTREAM_ROOTS` | Không | Danh sách đường dẫn tới thư mục gốc của thư viện upstream/dùng chung (để resolve source code của upstream node) |
+| `UA_MCP_METRICS_FILE` | Không | Đường dẫn file JSONL cho usage metrics. Rỗng = disable hoàn toàn (mặc định). Xem section [Usage Metrics](#usage-metrics) |
+
+---
+
+## Usage Metrics
+
+Module `metrics.py` đo usage của tool surface — 1 JSON line cho mỗi tool call, append vào file rotating có size cap. Dữ liệu trả lời ba câu hỏi:
+
+1. **Adoption** — ua-mcp có thực sự được dùng không? Tool nào được gọi, bao nhiêu lần?
+2. **Điểm yếu** — Chỗ nào trả về kết quả rỗng, lỗi, hay tool nào không ai gọi (dead tool)?
+3. **Hỏi lặp** — Cùng một caller có đang hỏi cùng một câu hỏi không? (detection qua `caller + arg_hash` trong time window)
+
+### Thiết kế an toàn
+
+**Hard rule: ghi metrics không bao giờ được phá tool call.** Mọi failure path đều được swallow (file không ghi được, disk full, JSON không serialize được), và writer tự **disable vĩnh viễn** sau 5 lần lỗi liên tiếp — không còn retry, không còn log spam, tool call chạy tiếp bình thường.
+
+- **Caller key** — hash `ip + user_agent`, không lưu IP raw (tránh PII)
+- **Arg hash** — SHA-256 của `(tool, args)`, args dài được truncate trước khi ghi nhưng hash vẫn tính trên bản đầy đủ
+- **Outcome classification** — phân loại `ok` / `empty` / `error` / `exception` dựa trên giá trị trả về
+- **Rotating file** — size cap, không tăng vô hạn
+
+### Kích hoạt
+
+```bash
+# Mặc định: metrics TẮT (không ghi gì)
+PROJECT_ROOTS=/đường/dẫn/dự-án uv run server.py
+
+# Bật metrics: set UA_MCP_METRICS_FILE
+UA_MCP_METRICS_FILE=/var/log/ua-mcp/metrics.jsonl \
+PROJECT_ROOTS=/đường/dẫn/dự-án uv run server.py
+```
+
+### Wiring
+
+`server.py` gọi `metrics.install(mcp)` **trước** tool đầu tiên được khai báo bằng `@mcp.tool()`. Vì decorator chạy khi import theo thứ tự source, tool nào khai báo **trên** dòng `install` sẽ không bị đo — test `test_every_registered_tool_is_instrumented` bảo vệ invariant này.
+
+```bash
+# Chạy test metrics
+uv sync --group dev
+uv run pytest tests/test_metrics.py tests/test_metrics_integration.py -v
+```
 
 ---
 

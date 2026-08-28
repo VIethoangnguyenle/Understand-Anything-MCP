@@ -8,6 +8,11 @@ dependencies = [
     "rapidfuzz>=3.0.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
 [project.scripts]
 kg-mcp = "server:main"
 
