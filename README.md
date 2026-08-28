@@ -227,6 +227,15 @@ Understand-Anything-MCP/
 ├── server.py          # MCP server — định nghĩa 17 tools, registry đa dự án
 ├── kg_loader.py       # Bộ tải graph & query engine — data models, search, traversal, resolution
 ├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz
+├── scripts/           # Bộ script vận hành — clone, pull, re-index, gitignore
+│   ├── clone-repos.sh       # Clone repo từ manifest CSV vào REPO_ROOT (idempotent)
+│   ├── git-pull.sh          # Pull toàn bộ repo + report JSON
+│   ├── git-pull-run.sh      # Wrapper systemd: lưu JSON, alert webhook
+│   ├── sync-graph.sh        # Re-index graph incremental bằng claude agent trong docker
+│   ├── sync-graph-run.sh    # Wrapper cron: pull + sync + alert
+│   ├── check-graph-ignore.sh    # Kiểm tra .understand-anything/ được ignore đúng
+│   ├── revert-gitignore-graph.sh  # Hoán .gitignore sang .git/info/exclude
+│   └── test/                  # Harness test (git repo giả + docker giả)
 ├── tests/             # Bộ test tự động
 │   ├── test_kg_loader.py    # 59 unit tests cho core loader, query engine & cross-ref
 │   └── fixtures/            # Dữ liệu test JSON mẫu
@@ -283,6 +292,65 @@ Understand-Anything-MCP/
 8. **Domain edge type constants** — `DOMAIN_REL_CONTAINS_FLOW`, `DOMAIN_REL_FLOW_STEP`, v.v. — single source of truth, tránh typo
 
 9. **Kiểm tra độ mới** chạy lệnh `git diff <commit_phân_tích>..HEAD` để phát hiện số lượng file code đã thay đổi kể từ lần tạo graph gần nhất.
+
+---
+
+## Vận hành đồ thị (scripts/)
+
+Bộ script trong `scripts/` giúp vận hành graph ở quy mô nhiều repo trên một server — clone, pull, re-index, và giữ git status sạch. Tất cả script:
+
+- **Mặc định dry-run** khi cần ghi — phải truyền `--apply` mới thực thi.
+- **JSON ra stdout, log người đọc ra stderr** — parse được bằng `jq`, log `tail -f` được.
+- **Không ghi gì vào repo sản phẩm** — graph là runtime state, ignore qua `.git/info/exclude` (per-clone, sống qua mọi lần pull).
+- **Chạy được trên macOS (bash 3.2) và Linux** — harness test trong `scripts/test/` không cần VM, docker thật, hay LLM.
+
+### Kịch bản điển hình
+
+```bash
+# 1. Clone repo theo manifest CSV vào REPO_ROOT
+./scripts/clone-repos.sh --apply
+
+# 2. Pull toàn bộ repo (git-pull.sh) rồi re-index graph incremental (sync-graph.sh)
+./scripts/sync-graph-run.sh
+
+# 3. Kiểm tra .understand-anything/ được ignore đúng cách
+./scripts/check-graph-ignore.sh --fix
+```
+
+### Các script
+
+| Script | Chức năng |
+|---|---|
+| `clone-repos.sh` | Clone các repo trong `repos.csv` vào `REPO_ROOT`. Idempotent, xử lý được ca "thư mục chỉ chứa `.understand-anything/`" bằng cách clone ra temp rồi hoán đổi. |
+| `git-pull.sh` | Pull toàn bộ repo với `--rebase`, tự resolve branch (upstream → origin/HEAD → remote → local), report JSON kèm status từng repo (ok / up-to-date / dirty / conflict / failed). |
+| `git-pull-run.sh` | Wrapper systemd: chạy `git-pull.sh`, lưu JSON + log, prune theo `KEEP_RUNS`, alert qua webhook. |
+| `sync-graph.sh` | Re-index knowledge-graph incremental: đọc `meta.json .gitCommitHash` vs `HEAD`, chạy claude agent trong docker container với `stream-json`, có snapshot + rollback khi agent chết giữa chừng, có guard chống graph "degraded" (template summary tăng > 20%). |
+| `sync-graph-run.sh` | Wrapper cron: pull + sync, alert khi có repo cần can thiệp. |
+| `check-graph-ignore.sh` | Kiểm tra 3 trạng thái `.understand-anything/`: ok / not-ignored / tracked. `--fix` xử lý cả hai bằng cách ghi `.git/info/exclude` hoặc `git update-index --skip-worktree`. |
+| `revert-gitignore-graph.sh` | Hoàn tác sửa tay `.gitignore` chỉ thêm `.understand-anything` rồi chuyển quy tắc sang `.git/info/exclude`. Chỉ revert khi diff an toàn tuyệt đối. |
+
+### Biến môi trường chính
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `CLONE_REPOS_CSV` | `$SCRIPT_DIR/../repos.csv` | Manifest `<ten_thu_muc>,<git_url>` |
+| `CLONE_REPOS_ROOT` / `GIT_PULL_REPO_ROOT` / `SYNC_GRAPH_ROOT` | `/srv/ua-data` | Thư mục chứa các repo con |
+| `GIT_PULL_SKIP_FILE` | `~/.git-pull-skip` | Danh sách repo bỏ qua, 1 dòng 1 tên |
+| `UA_INDEXER_IMAGE` | `ua-indexer:latest` | Docker image chứa claude CLI + plugin understand-anything |
+| `UA_INDEXER_NETWORK` | `bridge` | Docker network agent dùng để gọi LLM API |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | — | Kết nối LLM (script không quan tâm model nào, chỉ cần CLI tương thích `claude -p --output-format stream-json`) |
+| `SYNC_GRAPH_TIMEOUT` / `SYNC_GRAPH_FULL_TIMEOUT` / `SYNC_GRAPH_DOMAIN_TIMEOUT` | `1800` / `7200` / `=TIMEOUT` | Timeout từng bước (index / rebuild / domain) |
+| `SYNC_GRAPH_MAX_CHANGED` | `0` (không giới hạn) | Bỏ qua repo có số file đổi vượt ngưỡng |
+| `SYNC_GRAPH_LANG` | `English` | Ngôn ngữ summary trong graph |
+| `*_ALERT_WEBHOOK` | rỗng | Webhook nhận JSON khi có repo lỗi |
+
+### Harness test
+
+`scripts/test/sync-graph-test.sh` tạo repo git giả + `docker` giả (trong `scripts/test/bin/`) để chạy hết các nhánh kết quả của `sync-graph.sh` không cần VM, container thật, hay LLM. Các case tương ứng các sự cố thực tế đã gặp (agent thoát 0 nhưng không ghi meta, stderr lẫn vào stream-json, timeout, bước domain bị bỏ trong báo cáo).
+
+```bash
+./scripts/test/sync-graph-test.sh   # pass=N fail=0
+```
 
 ---
 
