@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# shim cho macOS (khong co coreutils timeout). Tra 124 khi het gio, giong GNU.
+d="$1"; shift
+"$@" & pid=$!
+( sleep "$d"; kill -9 "$pid" 2>/dev/null; echo killed >"/tmp/.to-$pid" ) & w=$!
+wait "$pid"; rc=$?
+kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+if [[ -f "/tmp/.to-$pid" ]]; then rm -f "/tmp/.to-$pid"; exit 124; fi
+exit "$rc"

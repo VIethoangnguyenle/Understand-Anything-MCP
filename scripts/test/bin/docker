@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# docker gia lap cho harness sync-graph.sh
+[[ "$1" == "image" && "$2" == "inspect" ]] && exit 0
+repo=""
+for a in "$@"; do case "$a" in *:/repo) repo="${a%:/repo}";; esac; done
+ua="$repo/.understand-anything"
+head_hash="$(git -C "$repo" rev-parse HEAD)"
+
+emit() { printf '%s\n' "$1"; }
+
+# Buoc domain la mot lan goi agent RIENG voi prompt /understand-domain.
+# Nhan ra no de test duoc phan tinh gio domain.
+case "$*" in *understand-domain*)
+    emit '{"type":"system","subtype":"init","session_id":"d1"}'
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"dung domain graph"}]}}'
+    emit '{"type":"result","subtype":"success","is_error":false}'
+    printf '{"nodes":[{"id":"d1","type":"domain"},{"id":"d2","type":"domain"},{"id":"f1","type":"flow"}]}\n' \
+        >"$ua/domain-graph.json"
+    sleep 2
+    exit 0 ;;
+esac
+# stream-json hop le tren stdout
+emit '{"type":"system","subtype":"init","session_id":"t1"}'
+emit '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"node fingerprint-check.mjs"}}]}}'
+
+mkdir -p "$ua/intermediate"
+echo '{"action":"PARTIAL_UPDATE","filesToReanalyze":["a.ts"]}' >"$ua/intermediate/change-analysis.json"
+
+case "${SCENARIO:-bgkill}" in
+  bgkill)
+    echo '{"nodes":[{"id":"STALE"}]}' >"$ua/intermediate/batch-1.json"
+    echo '{"nodes":[{"id":"HALF-WRITTEN"}],"project":{}}' >"$ua/knowledge-graph.json"
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"Writing part 1 of 3"}]}}'
+    # dong stderr lam hong stream-json
+    echo 'Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.' >&2
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"SYNC_RESULT=PARTIAL_UPDATE"}]}}'
+    emit '{"type":"result","subtype":"success","is_error":false}'
+    exit 0 ;;
+  slow)
+    echo '{"nodes":[{"id":"HALF-WRITTEN"}]}' >"$ua/knowledge-graph.json"
+    sleep 60 ;;
+  ok)
+    echo 'node: some warning on stderr' >&2
+    emit '{"type":"assistant","message":{"content":[{"type":"text","text":"SYNC_RESULT=PARTIAL_UPDATE"}]}}'
+    emit '{"type":"result","subtype":"success","is_error":false}'
+    jq --arg h "$head_hash" '.gitCommitHash=$h' "$ua/meta.json" >"$ua/meta.tmp" && mv "$ua/meta.tmp" "$ua/meta.json"
+    jq '.nodes += [{"id":"new","type":"file","summary":"real summary written by LLM"}]' \
+       "$ua/knowledge-graph.json" >"$ua/kg.tmp" && mv "$ua/kg.tmp" "$ua/knowledge-graph.json"
+    rm -rf "$ua/intermediate"
+    exit 0 ;;
+esac
