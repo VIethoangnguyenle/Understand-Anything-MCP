@@ -1,0 +1,56 @@
+# Mẫu compose cho ua-mcp — sao chép thành compose.yaml rồi sửa theo máy bạn.
+#
+# Server nói MCP qua stdio nên đây KHÔNG phải service nghe cổng. Đừng `up -d`:
+# container sẽ khởi động rồi thoát ngay vì không có ai nối vào stdin. Chạy bằng
+#
+#     docker compose run --rm -T ua-mcp
+#
+# hoặc để MCP client tự gọi đúng lệnh đó (xem README, mục "Chạy bằng Docker").
+
+name: ua-mcp
+
+services:
+  ua-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ua-mcp:local
+    user: "1001:1001"
+    stdin_open: true
+
+    environment:
+      # Bắt buộc. Đường dẫn BÊN TRONG container, khớp với volumes bên dưới.
+      PROJECT_ROOTS: /data/du-an-a,/data/du-an-b
+
+      # Tùy chọn — thư mục gốc của thư viện dùng chung, để resolve source của
+      # upstream node.
+      # UPSTREAM_ROOTS: /data/thu-vien-dung-chung
+
+      # Tùy chọn — bật usage metrics. Cần một mount ghi được (xem bên dưới).
+      # UA_MCP_METRICS_FILE: /var/log/ua-mcp/metrics.jsonl
+
+      # check_freshness gọi git trong thư mục dự án. Repo mount vào container
+      # thường thuộc uid khác, git sẽ từ chối với "dubious ownership" và mọi
+      # lệnh rev-parse/diff fail — lại là fail im lặng, freshness về UNKNOWN.
+      # Dùng biến môi trường chứ không ghi ~/.gitconfig, vì container chạy
+      # read_only. Thu hẹp "*" thành từng đường dẫn cụ thể nếu bạn muốn chặt hơn.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+
+    volumes:
+      # Chỉ đọc là đủ: ua-mcp không bao giờ ghi vào dự án. Thư mục mount phải
+      # chứa .understand-anything/, và nên là git checkout để freshness hoạt động.
+      - ./du-an-a:/data/du-an-a:ro
+      - ./du-an-b:/data/du-an-b:ro
+      # Mount ghi được duy nhất, chỉ cần khi bật metrics:
+      # - ./logs:/var/log/ua-mcp:rw
+
+    # Server chỉ đọc graph rồi trả lời truy vấn — không cần ghi vào filesystem.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

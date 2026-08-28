@@ -85,6 +85,81 @@ Mỗi tool đều nhận tham số `project` tùy chọn. Nếu chỉ có một 
 
 ---
 
+## Chạy bằng Docker
+
+Repo kèm sẵn `Dockerfile` và `compose.example.yaml` để chạy server trong container — không cần cài Python hay `uv` trên máy, và dự án được mount **chỉ đọc**.
+
+### Dựng ảnh
+
+```bash
+docker build -t ua-mcp:local .
+```
+
+### Chạy một lần
+
+Server nói MCP qua **stdio**, không mở cổng nào. Vì vậy phải chạy với `-i`, và **đừng** `docker compose up -d` — container sẽ khởi động rồi thoát ngay vì không ai nối vào stdin.
+
+```bash
+docker run -i --rm \
+  -v /đường/dẫn/dự-án:/data/du-an:ro \
+  -e PROJECT_ROOTS=/data/du-an \
+  -e GIT_CONFIG_COUNT=1 \
+  -e GIT_CONFIG_KEY_0=safe.directory \
+  -e GIT_CONFIG_VALUE_0='*' \
+  ua-mcp:local
+```
+
+Hoặc chép `compose.example.yaml` thành `compose.yaml`, sửa đường dẫn, rồi:
+
+```bash
+docker compose run --rm -T ua-mcp
+```
+
+### Nối vào MCP client
+
+Trỏ client thẳng vào `docker`, thay vì `uv`:
+
+```json
+{
+  "mcpServers": {
+    "understand-anything": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/đường/dẫn/dự-án:/data/du-an:ro",
+        "-e", "PROJECT_ROOTS=/data/du-an",
+        "-e", "GIT_CONFIG_COUNT=1",
+        "-e", "GIT_CONFIG_KEY_0=safe.directory",
+        "-e", "GIT_CONFIG_VALUE_0=*",
+        "ua-mcp:local"
+      ]
+    }
+  }
+}
+```
+
+### Hai cái bẫy khiến FRESHNESS luôn UNKNOWN
+
+Cả hai đều **fail trong im lặng** — server chạy bình thường, tool trả lời bình thường, chỉ có `FRESHNESS` âm thầm về `UNKNOWN` mãi mãi. Nhìn từ ngoài giống hệt như dự án không phải git checkout, nên rất dễ bỏ qua.
+
+1. **Ảnh phải có `git`.** `check_freshness` gọi `git rev-parse HEAD` và `git diff` bên trong thư mục dự án. Base `python:3.12-slim` không kèm `git`; thiếu nó thì `FileNotFoundError` bị nuốt và mọi dự án đều báo `UNKNOWN`. `Dockerfile` trong repo đã cài sẵn.
+
+2. **Phải khai báo `safe.directory`.** Dự án mount vào container thường thuộc uid khác với user chạy trong container, git từ chối với *dubious ownership* và mọi lệnh đều fail. Dùng biến môi trường `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` thay vì ghi `~/.gitconfig` — container chạy `read_only` nên không ghi file config được.
+
+Kiểm nhanh sau khi dựng ảnh:
+
+```bash
+docker run --rm ua-mcp:local git --version
+```
+
+Rồi gọi `get_graph_stats` và xem mục `FRESHNESS` có thoát khỏi `UNKNOWN` không.
+
+### Ghi chú bảo mật
+
+`compose.example.yaml` mặc định bật `read_only: true`, `cap_drop: ALL`, `no-new-privileges`, và chạy bằng uid không phải root (1001). Server chỉ đọc graph rồi trả lời truy vấn nên không cần ghi gì; chỉ khi bật usage metrics mới cần đúng một mount ghi được.
+
+---
+
 ## Cấu hình MCP Client
 
 ### Gemini CLI / Antigravity
@@ -234,6 +309,9 @@ Understand-Anything-MCP/
 ├── kg_loader.py       # Bộ tải graph & query engine — data models, search, traversal, resolution
 ├── metrics.py         # Usage metrics — 1 JSON line / tool call, rotating file, fail-safe
 ├── pyproject.toml     # Cấu hình dự án — dependencies: mcp[cli], rapidfuzz, pytest (dev)
+├── Dockerfile         # Build đa tầng, chạy non-root, có sẵn git cho check_freshness
+├── compose.example.yaml  # Mẫu compose — chép thành compose.yaml rồi sửa đường dẫn
+├── .dockerignore      # Loại .venv/, tests/, cache ra khỏi build context
 ├── scripts/           # Bộ script vận hành — clone, pull, re-index, gitignore
 │   ├── clone-repos.sh       # Clone repo từ manifest CSV vào REPO_ROOT (idempotent)
 │   ├── git-pull.sh          # Pull toàn bộ repo + report JSON
@@ -252,6 +330,7 @@ Understand-Anything-MCP/
 │   ├── test_path_safety.py     # Tests cho path containment
 │   ├── test_metrics.py         # Unit tests cho metrics writer
 │   ├── test_metrics_integration.py  # Wiring metrics vào FastMCP tool surface
+│   ├── test_symbol_coverage.py # Tests cho compute_symbol_coverage
 │   └── fixtures/            # Dữ liệu test JSON mẫu
 │       ├── knowledge-graph.json
 │       └── domain-graph.json
